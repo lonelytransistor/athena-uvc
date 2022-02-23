@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+pkgnames=(athena-usb-uvc)
+url="https://github.com/dutycyclefinfet/athena-hook"
+pkgver=$(<version)
+timestamp=$(date +"%Y-%m-%dT%H:%M:%S%z")
+pkgdesc="Athena hook"
+section="utils"
+maintainer="Lonely Transistor <lonelytransistor@protonmail.com>"
+installdepends=(athena-linux libjpeg-turbo)
+license=GPL-3.0-or-later
+image=qt:v2.2.2
+makedepends=()
+conflicts=(rm2fb rm2fb-client display)
+replaces=(rm2fb rm2fb-client display)
+
+source=()
+sha256sums=()
+
+prepare() {
+    git clone --depth 1 https://github.com/lonelytransistor/athena-uvc "${srcdir}"
+    git clone --depth 1 https://github.com/libjpeg-turbo/libjpeg-turbo "${srcdir}/src/libjpeg-turbo"
+}
+
+build() {
+    cd "${srcdir}/src/libjpeg-turbo"
+    cmake -DCMAKE_TOOLCHAIN_FILE=/usr/share/cmake/arm-linux-gnueabihf.cmake
+    make -j$(nproc)
+    
+    cd "${srcdir}/src"
+    make -j$(nproc)
+}
+
+configure() {
+    if uname -r | grep athena > /dev/null ; then
+        systemctl daemon-reload
+        systemctl enable athena-usb-uvc
+    fi
+}
+
+function _install() {
+    if [ "$1" == "-r" ]; then
+        (
+            cd "${@:$#-1:1}"
+            for f in $(find . -type f); do
+                install -D "${@:2:$#-3}" "$f" "${@:$#}/$f"
+            done
+        )
+    else
+        install "$@"
+    fi
+}
+package() {
+    _install -m 755 -D "${srcdir}/src/uvc" "${pkgdir}/usr/libexec/athenaUSB-uvc"
+    _install -m 755 -D "${srcdir}/root/uvc.service" "${pkgdir}/lib/systemd/system/athena-usb-uvc.service"
+}

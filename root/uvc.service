@@ -1,0 +1,15 @@
+[Unit]
+Description=Athena UVC USB Gadget
+After=rm2fb.service
+ConditionPathExists=/dev/video0
+ConditionPathExists=/dev/video1
+StartLimitIntervalSec=500
+StartLimitBurst=5
+
+[Service]
+Restart=on-failure
+RestartSec=5s
+ExecStart=/usr/libexec/athenaUSB-uvc
+
+[Install]
+WantedBy=multi-user.target
