@@ -63,6 +63,8 @@ void UVCfb::video_reqbufs(uint8_t nbufs) {
         std::unique_lock<std::mutex> this_mx(m_mutex);
         if (!m_transcoder_running) {
             LOG("Starting transcoder thread");
+            if (m_transcoder_thread.joinable())
+                m_transcoder_thread.detach();
             m_transcoder_thread = std::thread(&UVCfb::transcoder, this);
         }
     }
