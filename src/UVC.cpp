@@ -30,8 +30,17 @@ UVC::UVC(char *devname, uint16_t maxpkt, uint8_t nbufs) {
     ioctl(g_uvc_fd, VIDIOC_SUBSCRIBE_EVENT, &sub);
     
     // Declare stream formats
-    g_formats.add(V4L2_PIX_FMT_MJPEG, 1404, 1872, 200000);
+    //g_formats.add(V4L2_PIX_FMT_MJPEG, 1404, 1872, 200000);
+    //FIXME
+    //g_formats.add(V4L2_PIX_FMT_MJPEG, 1080, 1920, 200000);
+    g_formats.add(V4L2_PIX_FMT_MJPEG,  720, 1280, 200000);
+    /*
     g_formats.add(V4L2_PIX_FMT_MJPEG, 1872, 1404, 200000);
+    g_formats.add(V4L2_PIX_FMT_MJPEG, 1920, 1080, 200000);
+    g_formats.add(V4L2_PIX_FMT_MJPEG, 1280,  720, 200000);
+    g_formats.add(V4L2_PIX_FMT_MJPEG,  858,  480, 200000);
+    g_formats.add(V4L2_PIX_FMT_MJPEG,  480,  360, 200000);*/
+    
     fill_streaming_control(&g_probe, g_formats[0]);
     fill_streaming_control(&g_commit, g_formats[0]);
 }

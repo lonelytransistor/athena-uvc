@@ -20,15 +20,24 @@ private:
     int m_nbands = 0;
     int m_pixelFormat = 0;
     int m_jpegSubsamp = 0;
+    
+    // TurboJPEG constants
+    const int m_jpegFlags = TJFLAG_NOREALLOC;
+    const int m_jpegQuality = 90;
+    
     // MMAPped framebuffer:
     void* m_fb = NULL;
     u_long m_fb_size = 0;
+    
     // Buffers:
     std::vector<struct buffer> m_buf;
+    uint8_t* m_tmp_buffer[2] = {NULL, NULL};
+    long unsigned int m_tmp_buffer_size[2] = {0, 0};
     uint8_t* m_jpeg_buffer[2] = {NULL, NULL};
     long unsigned int m_jpeg_buffer_size[2] = {0, 0};
     uint32_t m_jpeg_buffer_ix = 0;
     uint32_t m_jpeg_buffer_ix_copied = 0;
+    
     // Transcoder:
     bool m_transcoder_running = false;
     std::thread m_transcoder_thread;
@@ -37,8 +46,10 @@ private:
     void video_qbuf();
     void video_reqbufs(uint8_t nbufs);
     
-    void convertFbTo8Bit(uint8_t* buffer, uint32_t size);
-    uint16_t fletcher16(uint8_t *data, size_t len);
+    uint16_t getChecksum();
+    int getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h);
+    void getFb(uint8_t* buffer);
+    int getJPEG(tjhandle tjCompress_ptr, uint8_t* out_buffer, long unsigned int* out_buffer_sz, uint8_t w, uint8_t h);
     void transcoder();
     void fill_buffer(struct v4l2_buffer* ubuf);
 public:
