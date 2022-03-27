@@ -31,7 +31,14 @@ uint16_t UVCfb::getChecksum() {
     
     return (sss1 << 8 | sss0);
 }
-int UVCfb::getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
+int UVCfb::getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start, uint8_t precision) {
+    if (precision == 16) {
+        return getResizedFb_8bit(buffer, w, h, x_start, y_start);
+    } else {
+        return getResizedFb_8bit(buffer, w, h, x_start, y_start);
+    }
+}
+int UVCfb::getResizedFb_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
     const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
     const auto fb_height = m_fb_height;
     const auto fb_width = m_fb_width;
@@ -126,6 +133,117 @@ int UVCfb::getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_star
             // Finally sum up all the corners and write them to the buffer.
             uint8x8_t x0_pixels = vqadd_u8(x0y0_pixels, x0y1_pixels);
             uint8x8_t x1_pixels = vqadd_u8(x1y0_pixels, x1y1_pixels);
+            vst1_u8(&buffer[(y_dst + y_start)*w + x_offset + x_start], vqadd_u8(x0_pixels, x1_pixels));
+        }
+    }
+    
+    return w*h;
+}
+int UVCfb::getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
+    const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
+    const auto fb_height = m_fb_height;
+    const auto fb_width = m_fb_width;
+    const auto fb_size = fb_height * fb_width;
+    
+    // Generate helper vectors
+    const uint16_t vect_rising_b[] = {0, 1, 2, 3};
+    const uint16x4_t vect_rising = vld1_u16(vect_rising_b);
+    const uint16x4_t vect_0x01 = vdup_n_u16(0x0001);
+    const uint16x4_t vect_0xFFFF = vdup_n_u16(0xFFFF);
+    
+    // Calculate ratios minus 1. These will always be 0.0<ratio<1.0 then scaled up to 16bits
+    // 1 + at the beginning ensures better precision on average
+    const uint16_t x_ratio = 1 + ((fb_width << 16)/w) & 0xFFFF;
+    const uint16_t y_ratio = 1 + ((fb_height << 16)/h) & 0xFFFF;
+
+    for (uint16_t y_dst=0; y_dst<h; y_dst++) {
+        // Get y0 and y1 of the averaging square
+        uint16_t y0 = ((y_dst * y_ratio) >> 16) + y_dst;
+        // Get w_y0 and w_y1 weights for the square
+        uint16x4_t wy0_dst = vdup_n_u16(         (y_dst * y_ratio) & 0xFFFF);
+        uint16x4_t wy1_dst = vdup_n_u16(0xFFFF - (y_dst * y_ratio) & 0xFFFF);
+        
+        for (uint16_t x_offset=0; x_offset<w; x_offset+=8) {
+            // NOTE: There are no intrinsics for 32x8 or 16x8, so we need to repeat most of the steps twice.
+
+            // Initialize our x coordinates with a rising list and add to it the current x_offset.
+            // Then multiply exery resulting x coordinate with x_ratio to get a vector of x_dst.
+            uint32x4_t x_data_0 = vmull_n_u16( vadd_u16( vect_rising, vdup_n_u16(x_offset  ) ), x_ratio );
+            uint32x4_t x_data_1 = vmull_n_u16( vadd_u16( vect_rising, vdup_n_u16(x_offset+4) ), x_ratio );
+            // The high part of the operation will contain the delta(x0) coordinates for the square in the fb. x1 is 1 larger.
+            // This value will be actually x0-x_offset because our ratio has 1 substructed from them.
+            uint16x4_t x0_dst_0 = vshrn_n_u32(x_data_0, 16);
+            uint16x4_t x0_dst_1 = vshrn_n_u32(x_data_1, 16);
+            uint16x4_t x1_dst_0 = vadd_u16(x0_dst_0, vect_0x01);
+            uint16x4_t x1_dst_1 = vadd_u16(x0_dst_1, vect_0x01);
+            // The low part will contain the weight for this pixel multiplied by 256.
+            // Because there is no conversion of 16x4 to 8x4, we need to stitch two 16x4 into one 16x8.
+            // Then we can get only the most significant bits to 8
+            uint16x4_t wx0_dst_0 = vmovn_u32(x_data_0);
+            uint16x4_t wx0_dst_1 = vmovn_u32(x_data_1);
+            uint16x4_t wx1_dst_0 = vsub_u16(vect_0xFFFF, wx0_dst_0);
+            uint16x4_t wx1_dst_1 = vsub_u16(vect_0xFFFF, wx0_dst_1);
+            
+            // Now we can merge all of the above into 16x8
+            uint16x8_t x0_dst_16b = vcombine_u16(x0_dst_0, x0_dst_1);
+            uint16x8_t x1_dst_16b = vcombine_u16(x1_dst_0, x1_dst_1);
+            
+            // We can now generate weights for every corner.
+            // We are multiplying two pseudo floating point values, shifted by 16 bits to the left, so that they are integers.
+            // Therefore we need to shift one of the 8 bits back to the right, to again obtain a pseudo-floating point integer.
+            uint16x4_t wx0y0_dst_0 = vshrn_n_u32(vmull_u16(wx0_dst_0, wy0_dst), 16);
+            uint16x4_t wx0y0_dst_1 = vshrn_n_u32(vmull_u16(wx0_dst_1, wy0_dst), 16);
+            uint16x4_t wx0y1_dst_0 = vshrn_n_u32(vmull_u16(wx0_dst_0, wy1_dst), 16);
+            uint16x4_t wx0y1_dst_1 = vshrn_n_u32(vmull_u16(wx0_dst_1, wy1_dst), 16);
+            uint16x4_t wx1y0_dst_0 = vshrn_n_u32(vmull_u16(wx1_dst_0, wy0_dst), 16);
+            uint16x4_t wx1y0_dst_1 = vshrn_n_u32(vmull_u16(wx1_dst_1, wy0_dst), 16);
+            uint16x4_t wx1y1_dst_0 = vshrn_n_u32(vmull_u16(wx1_dst_0, wy1_dst), 16);
+            uint16x4_t wx1y1_dst_1 = vshrn_n_u32(vmull_u16(wx1_dst_1, wy1_dst), 16);
+            
+            // Calculate mod 4 for every element in xN_dst vectors.
+            uint16_t x_fb_offset = vgetq_lane_u16(x0_dst_16b, 0);
+            uint8x8_t x0_dst = vmovn_u16(vsubq_u16(x0_dst_16b, vdupq_n_u16(x_fb_offset)));
+            uint8x8_t x1_dst = vmovn_u16(vsubq_u16(x1_dst_16b, vdupq_n_u16(x_fb_offset)));
+            // Read the buffer and drop the low bytes to get an 8-bit value.
+            uint32_t fb_offset = fb_width*y0 + x_offset + x_fb_offset;
+            if (fb_offset+16 >= fb_size) {
+                DEBUG("Buffer overflow");
+                return y_dst*w + x_offset;
+            }
+            uint8x8_t y_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_offset  ]).val[0];
+            uint8x8_t y_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_offset+8]).val[0];
+            // Lookup the values for the x0,y0 pixels in the fb.
+            uint8x8_t x0y0_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
+            uint8x8_t x0y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
+            uint16x8_t x0y0_pixels = vmovl_u8(veor_u8(x0y0_pixels_0, x0y0_pixels_1));
+            // Lookup the values for the x1,y0 pixels in the fb.
+            uint8x8_t x1y0_pixels_0 = vtbl1_u8(y_buff_0, x1_dst);
+            uint8x8_t x1y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
+            uint16x8_t x1y0_pixels = vmovl_u8(veor_u8(x1y0_pixels_0, x1y0_pixels_1));
+            // Lookup the values for the x0,y1 pixels in the fb.
+            uint8x8_t x0y1_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
+            uint8x8_t x0y1_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
+            uint16x8_t x0y1_pixels = vmovl_u8(veor_u8(x0y1_pixels_0, x0y1_pixels_1));
+            // Lookup the values for the x1,y1 pixels in the fb.
+            uint8x8_t x1y1_pixels_0 = vtbl1_u8(y_buff_0, x1_dst);
+            uint8x8_t x1y1_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
+            uint16x8_t x1y1_pixels = vmovl_u8(veor_u8(x1y1_pixels_0, x1y1_pixels_1));
+            
+            // Multiply the pixels by their weights.
+            uint16x4_t x0y0_pixels_0b = vshrn_n_u32(vmull_u16(vget_high_u16(x0y0_pixels), wx0y0_dst_0), 16);
+            uint16x4_t x0y0_pixels_1b = vshrn_n_u32(vmull_u16( vget_low_u16(x0y0_pixels), wx0y0_dst_1), 16);
+            uint16x4_t x0y1_pixels_0b = vshrn_n_u32(vmull_u16(vget_high_u16(x0y1_pixels), wx0y1_dst_0), 16);
+            uint16x4_t x0y1_pixels_1b = vshrn_n_u32(vmull_u16( vget_low_u16(x0y1_pixels), wx0y1_dst_1), 16);
+            uint16x4_t x1y0_pixels_0b = vshrn_n_u32(vmull_u16(vget_high_u16(x1y0_pixels), wx1y0_dst_0), 16);
+            uint16x4_t x1y0_pixels_1b = vshrn_n_u32(vmull_u16( vget_low_u16(x1y0_pixels), wx1y0_dst_1), 16);
+            uint16x4_t x1y1_pixels_0b = vshrn_n_u32(vmull_u16(vget_high_u16(x1y1_pixels), wx1y1_dst_0), 16);
+            uint16x4_t x1y1_pixels_1b = vshrn_n_u32(vmull_u16( vget_low_u16(x1y1_pixels), wx1y1_dst_1), 16);
+            
+            //DEBUG("new:["<<std::to_string(x_offset)<<", "<<std::to_string(y_dst)<<"], old:["<<std::to_string(x_offset + x_fb_offset)<<", "<<std::to_string(y0)<<"] "<<std::to_string(fb_offset));
+            
+            // Finally sum up all the corners and write them to the buffer.
+            uint8x8_t x0_pixels = vqadd_u8(vmovn_u16(vcombine_u16(x0y0_pixels_0b, x0y0_pixels_1b)), vmovn_u16(vcombine_u16(x0y1_pixels_0b, x0y1_pixels_1b)));
+            uint8x8_t x1_pixels = vqadd_u8(vmovn_u16(vcombine_u16(x1y0_pixels_0b, x1y0_pixels_1b)), vmovn_u16(vcombine_u16(x1y1_pixels_0b, x1y1_pixels_1b)));
             vst1_u8(&buffer[(y_dst + y_start)*w + x_offset + x_start], vqadd_u8(x0_pixels, x1_pixels));
         }
     }
