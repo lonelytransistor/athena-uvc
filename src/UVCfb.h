@@ -47,9 +47,9 @@ private:
     void video_reqbufs(uint8_t nbufs);
     
     uint16_t getChecksum();
-    int getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h);
+    int getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start=0, uint16_t y_start=0);
     int getFb(uint8_t* buffer);
-    int getJPEG(tjhandle tjCompress_ptr, uint8_t* out_buffer, long unsigned int* out_buffer_sz, uint16_t w, uint16_t h);
+    int getJPEG(tjhandle tjCompress_ptr, uint8_t* out_buffer, long unsigned int* out_buffer_sz, struct uvc_format_info format);
     void transcoder();
     void fill_buffer(struct v4l2_buffer* ubuf);
 public:

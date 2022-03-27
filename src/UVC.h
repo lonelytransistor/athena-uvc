@@ -58,6 +58,8 @@ struct uvc_format_info {
     unsigned int interval;
     unsigned int i_frame;
     unsigned int i_format;
+    unsigned int real_width;
+    unsigned int real_height;
 };
 struct buffer {
     struct v4l2_buffer buf;
@@ -94,7 +96,7 @@ public:
     void add(struct uvc_format_info new_format) {
         add(new_format.fcc, new_format.width, new_format.height, new_format.interval);
     }
-    void add(unsigned int fcc, unsigned int width, unsigned int height, unsigned int interval) {
+    void add(unsigned int fcc, unsigned int width, unsigned int height, unsigned int real_width = 0, unsigned int real_height = 0, unsigned int interval = 200000) {
         struct uvc_format_info new_format;
         uint8_t ix = 255; uint8_t ix2 = 0;
         
@@ -116,6 +118,8 @@ public:
             new_format.i_format = (formats_num++);
             ix = 0;
         }
+        new_format.real_width = real_width ? real_width : width;
+        new_format.real_height = real_height ? real_height : height;
         formats.insert(formats.begin()+ix, new_format);
     }
     UVCFormats() {}
@@ -133,9 +137,7 @@ protected:
     uint8_t g_brightness_val;
     // Video format
     unsigned int g_nbufs;
-    unsigned int g_fcc;
-    unsigned int g_width;
-    unsigned int g_height;
+    struct uvc_format_info g_format;
     // Config
     bool g_bulk;
     unsigned int g_payload_size;

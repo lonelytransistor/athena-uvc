@@ -4,24 +4,22 @@
 #include "UVC.h"
 
 void UVC::video_set_format(struct uvc_format_info format) {
-    g_fcc = format.fcc;
-    g_width = format.width;
-    g_height = format.height;
+    g_format = format;
     
     struct v4l2_format fmt;
     memset(&fmt, 0, sizeof(fmt));
 
     fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-    fmt.fmt.pix.width = g_width;
-    fmt.fmt.pix.height = g_height;
-    fmt.fmt.pix.pixelformat = g_fcc;
+    fmt.fmt.pix.width = g_format.width;
+    fmt.fmt.pix.height = g_format.height;
+    fmt.fmt.pix.pixelformat = g_format.fcc;
     fmt.fmt.pix.field = V4L2_FIELD_NONE;
     fmt.fmt.pix.sizeimage = g_payload_size;
     if (ioctl(g_uvc_fd, VIDIOC_S_FMT, &fmt) < 0) {
-        ERR("Format setup failed: "<<pixfmtstr(g_fcc)<<","<<std::to_string(g_width)<<":"<<std::to_string(g_height));
+        ERR("Format setup failed: "<<pixfmtstr(g_format.fcc)<<","<<std::to_string(g_format.width)<<":"<<std::to_string(g_format.height));
         throw std::runtime_error(strerror(errno));
     }
-    LOG("New format set: "<<pixfmtstr(g_fcc)<<","<<std::to_string(g_width)<<":"<<std::to_string(g_height));
+    LOG("New format set: "<<pixfmtstr(g_format.fcc)<<","<<std::to_string(g_format.width)<<":"<<std::to_string(g_format.height));
 }
 void UVC::video_enable_stream(bool enable) {
     g_is_streaming = enable;

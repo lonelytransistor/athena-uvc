@@ -31,7 +31,7 @@ uint16_t UVCfb::getChecksum() {
     
     return (sss1 << 8 | sss0);
 }
-int UVCfb::getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h) {
+int UVCfb::getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
     const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
     const auto fb_height = m_fb_height;
     const auto fb_width = m_fb_width;
@@ -96,8 +96,8 @@ int UVCfb::getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h) {
                 DEBUG("Buffer overflow");
                 return y_dst*w + x_offset;
             }
-            uint8x8_t y_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_offset  ]).val[0];
-            uint8x8_t y_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_offset+8]).val[0];
+            uint8x8_t y_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_offset  ]).val[1];
+            uint8x8_t y_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_offset+8]).val[1];
             // Lookup the values for the x0,y0 pixels in the fb.
             uint8x8_t x0y0_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
             uint8x8_t x0y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
@@ -126,12 +126,22 @@ int UVCfb::getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h) {
             // Finally sum up all the corners and write them to the buffer.
             uint8x8_t x0_pixels = vqadd_u8(x0y0_pixels, x0y1_pixels);
             uint8x8_t x1_pixels = vqadd_u8(x1y0_pixels, x1y1_pixels);
-            vst1_u8(&buffer[y_dst*w + x_offset], vqadd_u8(x0_pixels, x1_pixels));
+            vst1_u8(&buffer[(y_dst + y_start)*w + x_offset + x_start], vqadd_u8(x0_pixels, x1_pixels));
         }
     }
     
     return w*h;
 }
+/*int UVCfb::rotateBuffer(uint8_t* buffer, uint16_t w, uint16_t h) {
+    for (uint16_t x=0; x<w; x+=8) {
+        uint8x8x8_t rows 
+        for (uint16_t dy=0; dy<8; dy++) {
+            uint8x8_t row = vld1_u8(&buffer[(y+dy)*w + x]);
+            
+        
+        vst1_u8(&buffer[i*8],.val[1]);
+    }
+}*/
 int UVCfb::getFb(uint8_t* buffer) {
     const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
     const auto fb_height = m_fb_height;
@@ -140,26 +150,26 @@ int UVCfb::getFb(uint8_t* buffer) {
 
     // Read 2x8x16bit pixels (2x128bits), store 2x8x8bit pixels (2x64bits)
     for (uint32_t i=0; i<fb_size/8; i++) {
-        vst1_u8(&buffer[i*8], vld2_u8((uint8_t*)&fb_ptr[i*8]).val[0]);
+        vst1_u8(&buffer[i*8], vld2_u8((uint8_t*)&fb_ptr[i*8]).val[1]);
     }
     
     return fb_size/2;
 }
-int UVCfb::getJPEG(tjhandle tjCompress_ptr, uint8_t* out_buffer, long unsigned int* out_buffer_sz, uint16_t w, uint16_t h) {
+int UVCfb::getJPEG(tjhandle tjCompress_ptr, uint8_t* out_buffer, long unsigned int* out_buffer_sz, struct uvc_format_info format) {
     int ret;
     
-    if ((w == m_fb_width) && (h == m_fb_height)) {
+    if ((format.width == m_fb_width) && (format.height == m_fb_height)) {
         getFb(m_tmp_buffer);
     } else {
         // Clear the output buffer
         DEBUG("Clearing buffer: "<<std::to_string(w*h)<<" < "<<std::to_string(m_tmp_buffer_size));
         memset(m_tmp_buffer, 0, m_tmp_buffer_size);
         DEBUG("Rescaling");
-        getResizedFb(m_tmp_buffer, w, h);
+        getResizedFb(m_tmp_buffer, format.real_width, format.real_height, (format.width-format.real_width)/2, (format.height-format.real_height)/2);
     }
     DEBUG("Generating JPEG");
     ret = tjCompress2(tjCompress_ptr, m_tmp_buffer,
-        w, 0, h, m_pixelFormat,
+        format.width, 0, format.height, m_pixelFormat,
         &out_buffer, out_buffer_sz,
         m_jpegSubsamp, m_jpegQuality, m_jpegFlags);
     
@@ -169,10 +179,9 @@ int UVCfb::getJPEG(tjhandle tjCompress_ptr, uint8_t* out_buffer, long unsigned i
 void UVCfb::transcoder() {
     LOG("Transcoder thread starting");
     // Perform sanity checks:
-    uint16_t w = g_width;
-    uint16_t h = g_height;
-    if ((w < m_fb_width/2) || (w > m_fb_width) || (h < m_fb_height/2) || (h > m_fb_height)) {
-        LOG("Invalid format dimensions! ("<<std::to_string(w)<<"x"<<std::to_string(h)<<")");
+    struct uvc_format_info format = g_format;
+    if ((format.width < m_fb_width/2) || (format.width > m_fb_width) || (format.height < m_fb_height/2) || (format.height > m_fb_height)) {
+        LOG("Invalid format dimensions! ("<<std::to_string(format.width)<<"x"<<std::to_string(format.height)<<")");
     }
     
     // Create mutex:
@@ -205,10 +214,10 @@ void UVCfb::transcoder() {
         goto fail;
     }
     
-    LOG("Filling buffers with initial data: "<<std::to_string(w)<<"x"<<std::to_string(h));
+    LOG("Filling buffers with initial data: "<<std::to_string(format.width)<<"x"<<std::to_string(format.height));
     // Fill buffers with initial data:
     for (uint8_t i=0; i<2; i++) {
-        if (getJPEG(tjCompress_ptr, m_jpeg_buffer[i], &m_jpeg_buffer_size[i], w, h)) {
+        if (getJPEG(tjCompress_ptr, m_jpeg_buffer[i], &m_jpeg_buffer_size[i], format)) {
             ERR(tjGetErrorStr());
             goto fail;
         }
@@ -223,7 +232,7 @@ void UVCfb::transcoder() {
             checksum_new = checksum_old;
             uint8_t buffer_ix = (m_jpeg_buffer_ix+1)&0x01; // Point to the next unused jpeg buffer
             
-            if (getJPEG(tjCompress_ptr, m_jpeg_buffer[buffer_ix], &m_jpeg_buffer_size[buffer_ix], w, h)) {
+            if (getJPEG(tjCompress_ptr, m_jpeg_buffer[buffer_ix], &m_jpeg_buffer_size[buffer_ix], format)) {
                 ERR(tjGetErrorStr());
                 goto fail;
             }

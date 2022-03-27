@@ -31,9 +31,8 @@ UVC::UVC(char *devname, uint16_t maxpkt, uint8_t nbufs) {
     ioctl(g_uvc_fd, VIDIOC_SUBSCRIBE_EVENT, &sub);
     
     // Declare stream formats
-    g_formats.add(V4L2_PIX_FMT_MJPEG, 1404, 1872, 200000);
-    //g_formats.add(V4L2_PIX_FMT_MJPEG, 1080, 1920, 200000);
-    g_formats.add(V4L2_PIX_FMT_MJPEG,  720, 1280, 200000);
+    g_formats.add(V4L2_PIX_FMT_MJPEG, 1404, 1872, 1404, 1872);
+    g_formats.add(V4L2_PIX_FMT_MJPEG,  720, 1280,  720,  960);
     /*
     g_formats.add(V4L2_PIX_FMT_MJPEG, 1872, 1404, 200000);
     g_formats.add(V4L2_PIX_FMT_MJPEG, 1920, 1080, 200000);
