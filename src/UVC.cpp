@@ -4,6 +4,7 @@
 #include "UVC.h"
 
 UVC::UVC(char *devname, uint16_t maxpkt, uint8_t nbufs) {
+    g_is_streaming = false;
     g_nbufs = nbufs;
     g_max_packet_size = maxpkt;
     
@@ -30,8 +31,7 @@ UVC::UVC(char *devname, uint16_t maxpkt, uint8_t nbufs) {
     ioctl(g_uvc_fd, VIDIOC_SUBSCRIBE_EVENT, &sub);
     
     // Declare stream formats
-    //g_formats.add(V4L2_PIX_FMT_MJPEG, 1404, 1872, 200000);
-    //FIXME
+    g_formats.add(V4L2_PIX_FMT_MJPEG, 1404, 1872, 200000);
     //g_formats.add(V4L2_PIX_FMT_MJPEG, 1080, 1920, 200000);
     g_formats.add(V4L2_PIX_FMT_MJPEG,  720, 1280, 200000);
     /*
@@ -50,20 +50,19 @@ UVC::~UVC() {
 void UVC::set_formats(UVCFormats formats) {
 }
 void UVC::loop_main() {
-    fd_set fdsu;
+    fd_set fdsu, efds, dfds;
     FD_ZERO(&fdsu);
     FD_SET(g_uvc_fd, &fdsu);
-    fd_set efds = fdsu;
-    fd_set dfds = fdsu;
+    efds = fdsu;
+    dfds = fdsu;
     
-    if (select(g_uvc_fd + 1, NULL, &dfds, &efds, NULL) <=0) {
-        if (errno == EINTR) {
-            throw std::invalid_argument(strerror(errno));
-        }
+    if (select(g_uvc_fd + 1, NULL, g_is_streaming ? &dfds : NULL, &efds, NULL) == -1) {
+        throw std::invalid_argument(strerror(errno));
     }
     if (FD_ISSET(g_uvc_fd, &efds)) {
         events_process();
-    } else if (FD_ISSET(g_uvc_fd, &dfds)) {
+    }
+    if (FD_ISSET(g_uvc_fd, &dfds)) {
         video_process();
     }
 }

@@ -4,9 +4,9 @@ KERNEL_DIR      ?= /usr/src/linux
 
 CC              := $(CROSS_COMPILE)g++
 LD		:= $(CROSS_COMPILE)ld
-KERNEL_INCLUDE  := -I$(KERNEL_DIR)/include -I$(KERNEL_DIR)/arch/$(ARCH)/include -I./libjpeg-turbo/ -I./Ne10/inc/
+KERNEL_INCLUDE  := -I$(KERNEL_DIR)/include -I$(KERNEL_DIR)/arch/$(ARCH)/include -I./libjpeg-turbo/
 CPPFLAGS        := $(KERNEL_INCLUDE)
-LDFLAGS         := -L./libjpeg-turbo/ -ljpeg -lturbojpeg -lpthread -L./Ne10/ -lne10
+LDFLAGS         := -L./libjpeg-turbo/ -ljpeg -lturbojpeg -lpthread
 
 all: uvc
 

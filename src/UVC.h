@@ -32,8 +32,14 @@
 #include <jpeglib.h>
 #include <turbojpeg.h>
 
-#define LOG(msg) std::cout<<"\033[1;33m"<<__FILE__<<"\033[0m"<<":"<<"\033[1;33m"<<__LINE__<<"\033[0m\033[1;32m>\033[1;33m\t"<<__FUNCTION__<<"\033[1;32m> \033[0m"<<msg<<"."<<std::endl
-#define ERR(msg) std::cerr<<"\033[1;33m"<<__FILE__<<"\033[0m"<<":"<<"\033[1;33m"<<__LINE__<<"\033[0m\033[1;32m>\033[1;33m\t"<<__FUNCTION__<<"\033[1;32m> \033[0m"<<msg<<"."<<std::endl
+//#define _DEBUG_ENA_
+#ifdef _DEBUG_ENA_
+#define DEBUG(msg) std::cerr<<"\033[1;33m"<<__FILE__<<"\033[0m"<<":"<<"\033[1;33m"<<__LINE__<<"\t"<<__FUNCTION__<<" \033[0m\t"<<msg<<"."<<std::endl
+#else
+#define DEBUG(msg)
+#endif
+#define LOG(msg) std::cout<<"\033[1;32m"<<__FILE__<<"\033[0m"<<":"<<"\033[1;32m"<<__LINE__<<"\t"<<__FUNCTION__<<" \033[0m\t"<<msg<<"."<<std::endl
+#define ERR(msg) std::cerr<<"\033[1;31m"<<__FILE__<<"\033[0m"<<":"<<"\033[1;31m"<<__LINE__<<"\t"<<__FUNCTION__<<" \033[0m\t"<<msg<<"."<<std::endl
 #define pixfmtstr(x) (char)(x&0xff)<<(char)((x>>8)&0xff)<<(char)((x>>16)&0xff)<<(char)((x>>24)&0xff)
 
 #define PU_BRIGHTNESS_MIN_VAL 0
