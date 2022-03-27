@@ -35,11 +35,10 @@ UVC::UVC(char *devname, uint16_t maxpkt, uint8_t nbufs) {
     g_formats.add(V4L2_PIX_FMT_MJPEG, 1404, 1872, 1404, 1872);
     g_formats.add(V4L2_PIX_FMT_MJPEG, 1080, 1920, 1080, 1440);
     g_formats.add(V4L2_PIX_FMT_MJPEG,  720, 1280,  720,  960);
-    /*
     // Rotated
     g_formats.add(V4L2_PIX_FMT_MJPEG, 1872, 1404, 1872, 1404);
     g_formats.add(V4L2_PIX_FMT_MJPEG, 1920, 1080, 1440, 1080);
-    g_formats.add(V4L2_PIX_FMT_MJPEG, 1280,  720,  960,  720);*/
+    g_formats.add(V4L2_PIX_FMT_MJPEG, 1280,  720,  960,  720);
     
     fill_streaming_control(&g_probe, g_formats[0]);
     fill_streaming_control(&g_commit, g_formats[0]);

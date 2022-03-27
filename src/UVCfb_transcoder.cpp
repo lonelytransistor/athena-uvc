@@ -248,18 +248,85 @@ int UVCfb::getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t 
         }
     }
     
-    return w*h;
+    return y_dst*w + x_offset;
 }
-/*int UVCfb::rotateBuffer(uint8_t* buffer, uint16_t w, uint16_t h) {
-    for (uint16_t x=0; x<w; x+=8) {
-        uint8x8x8_t rows 
-        for (uint16_t dy=0; dy<8; dy++) {
-            uint8x8_t row = vld1_u8(&buffer[(y+dy)*w + x]);
+int UVCfb::rotateBuffer(uint8_t* in_buffer, uint8_t* out_buffer, uint16_t w, uint16_t h) {
+    for (uint16_t y=0; y<h; y+=8) {
+        for (uint16_t x=0; x<w; x+=8) {
+            uint8x8_t row[] = {
+                vld1_u8(&in_buffer[x + (y+0)*w]),
+                vld1_u8(&in_buffer[x + (y+1)*w]),
+                vld1_u8(&in_buffer[x + (y+2)*w]),
+                vld1_u8(&in_buffer[x + (y+3)*w]),
+                vld1_u8(&in_buffer[x + (y+4)*w]),
+                vld1_u8(&in_buffer[x + (y+5)*w]),
+                vld1_u8(&in_buffer[x + (y+6)*w]),
+                vld1_u8(&in_buffer[x + (y+7)*w])
+            };
+            vtrn8(row[0], row[1]);
+            vtrn8(row[2], row[3]);
+            vtrn8(row[4], row[5]);
+            vtrn8(row[6], row[7]);
             
-        
-        vst1_u8(&buffer[i*8],.val[1]);
+            vtrn16(row[0], row[2]);
+            vtrn16(row[1], row[3]);
+            vtrn16(row[4], row[6]);
+            vtrn16(row[5], row[7]);
+            
+            vtrn16(row[0], row[4]);
+            vtrn16(row[1], row[5]);
+            vtrn16(row[2], row[6]);
+            vtrn16(row[3], row[7]);
+            
+            for (uint8_t ix=0; ix<sizeof(row); ix++) {
+                vst1_u8(&out_buffer[(x+ix)*h + y], row[ix]);
+            }
+        }
     }
-}*/
+    
+    return x*y;
+}
+int UVCfb::getRotatedFb(uint8_t* out_buffer) {
+    const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
+    const auto fb_height = m_fb_height;
+    const auto fb_width = m_fb_width;
+    const auto fb_size = fb_height * fb_width;
+
+    for (uint16_t y=0; y<h; y+=8) {
+        for (uint16_t x=0; x<w; x+=8) {
+            uint8x8_t row[] = {
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+0)*w]),
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+1)*w]),
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+2)*w]),
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+3)*w]),
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+4)*w]),
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+5)*w]),
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+6)*w]),
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+7)*w])
+            };
+            vtrn8(row[0], row[1]);
+            vtrn8(row[2], row[3]);
+            vtrn8(row[4], row[5]);
+            vtrn8(row[6], row[7]);
+            
+            vtrn16(row[0], row[2]);
+            vtrn16(row[1], row[3]);
+            vtrn16(row[4], row[6]);
+            vtrn16(row[5], row[7]);
+            
+            vtrn16(row[0], row[4]);
+            vtrn16(row[1], row[5]);
+            vtrn16(row[2], row[6]);
+            vtrn16(row[3], row[7]);
+            
+            for (uint8_t ix=0; ix<sizeof(row); ix++) {
+                vst1_u8(&out_buffer[(x+ix)*h + y], row[ix]);
+            }
+        }
+    }
+    
+    return x*y;
+}
 int UVCfb::getFb(uint8_t* buffer) {
     const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
     const auto fb_height = m_fb_height;
@@ -277,16 +344,18 @@ int UVCfb::getJPEG(tjhandle tjCompress_ptr, uint8_t* out_buffer, long unsigned i
     int ret;
     
     if ((format.width == m_fb_width) && (format.height == m_fb_height)) {
-        getFb(m_tmp_buffer);
+        getFb(m_tmp_buffer[1]);
+    } else if ((format.width == m_fb_height) && (format.height == m_fb_width)) {
+        getRotatedFb(m_tmp_buffer[1]);
+    } else if (format.width > format.height) {
+        memset(m_tmp_buffer[0], 0, m_tmp_buffer_size[0]);
+        getResizedFb(m_tmp_buffer[0], format.real_width, format.real_height, (format.width-format.real_width)/2, (format.height-format.real_height)/2, 16);
+        rotateBuffer(m_tmp_buffer[0], m_tmp_buffer[1], format.real_width, format.real_height);
     } else {
-        // Clear the output buffer
-        DEBUG("Clearing buffer: "<<std::to_string(w*h)<<" < "<<std::to_string(m_tmp_buffer_size));
-        memset(m_tmp_buffer, 0, m_tmp_buffer_size);
-        DEBUG("Rescaling");
-        getResizedFb(m_tmp_buffer, format.real_width, format.real_height, (format.width-format.real_width)/2, (format.height-format.real_height)/2, 16);
+        memset(m_tmp_buffer[1], 0, m_tmp_buffer_size[1]);
+        getResizedFb(m_tmp_buffer[1], format.real_width, format.real_height, (format.width-format.real_width)/2, (format.height-format.real_height)/2, 16);
     }
-    DEBUG("Generating JPEG");
-    ret = tjCompress2(tjCompress_ptr, m_tmp_buffer,
+    ret = tjCompress2(tjCompress_ptr, m_tmp_buffer[1],
         format.width, 0, format.height, m_pixelFormat,
         &out_buffer, out_buffer_sz,
         m_jpegSubsamp, m_jpegQuality, m_jpegFlags);
@@ -311,8 +380,10 @@ void UVCfb::transcoder() {
     this_mx.unlock();
     
     // Allocate buffers:
-    m_tmp_buffer = new uint8_t[m_fb_size];
-    m_tmp_buffer_size = m_fb_size;
+    m_tmp_buffer[0] = new uint8_t[m_fb_size];
+    m_tmp_buffer[1] = new uint8_t[m_fb_size];
+    m_tmp_buffer_size[0] = m_fb_size;
+    m_tmp_buffer_size[1] = m_fb_size;
     m_jpeg_buffer[0] = new uint8_t[g_payload_size];
     m_jpeg_buffer[1] = new uint8_t[g_payload_size];
     m_jpeg_buffer_size[0] = g_payload_size;
@@ -372,7 +443,8 @@ fail:
     // Free buffers:
     delete m_jpeg_buffer[0];
     delete m_jpeg_buffer[1];
-    delete m_tmp_buffer;
+    delete m_tmp_buffer[0];
+    delete m_tmp_buffer[1];
     
     tjDestroy(tjCompress_ptr);
     
