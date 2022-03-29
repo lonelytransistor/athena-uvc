@@ -31,15 +31,20 @@ uint16_t UVCfb::getChecksum() {
     
     return (sss1 << 8 | sss0);
 }
-int UVCfb::getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start, uint8_t precision) {
-    if (precision == 16) {
-        return getResizedFb_16bit(buffer, w, h, x_start, y_start);
+int UVCfb::getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start, uint8_t type) {
+    if (type == RESIZE_BILINEAR_16BIT) {
+        return getResizedFb_bilinear_16bit(buffer, w, h, x_start, y_start);
+    } else if (type == RESIZE_BILINEAR_8BIT) {
+        return getResizedFb_bilinear_8bit(buffer, w, h, x_start, y_start);
+    } else if (type == RESIZE_BICUBIC_8BIT) {
+        return getResizedFb_bicubic_8bit(buffer, w, h, x_start, y_start);
     } else {
-        return getResizedFb_8bit(buffer, w, h, x_start, y_start);
+        ERR("Invalid rescaler!");
+        return 0;
     }
 }
-int UVCfb::getResizedFb_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
-    const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
+int UVCfb::getResizedFb_bicubic_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
+    /*const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
     const auto fb_height = m_fb_height;
     const auto fb_width = m_fb_width;
     const auto fb_size = fb_height * fb_width;
@@ -63,6 +68,109 @@ int UVCfb::getResizedFb_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x
         uint8x8_t wy1_dst = vdup_n_u8(0xFF - (y_dst * y_ratio) & 0xFF);
         
         for (uint16_t x_offset=0; x_offset<w; x_offset+=8) {
+            // NOTE: There are no intrinsics for 32x8 or 16x8, so we need to repeat most of the steps twice.
+
+            // Initialize our x coordinates with a rising list and add to it the current x_offset.
+            // Then multiply exery resulting x coordinate with x_ratio to get a vector of x_dst.
+            uint32x4_t x_data_0 = vmull_n_u16( vadd_u16( vect_rising, vdup_n_u16(x_offset  ) ), x_ratio );
+            uint32x4_t x_data_1 = vmull_n_u16( vadd_u16( vect_rising, vdup_n_u16(x_offset+4) ), x_ratio );
+            // The high part of the operation will contain the delta(x0) coordinates for the square in the fb. x1 is 1 larger.
+            // This value will be actually x0-x_offset because our ratio has 1 substructed from them.
+            uint16x4_t x0_dst_0 = vshrn_n_u32(x_data_0, 8);
+            uint16x4_t x0_dst_1 = vshrn_n_u32(x_data_1, 8);
+            // The low part will contain the weight for this pixel multiplied by 256.
+            // Because there is no conversion of 16x4 to 8x4, we need to stitch two 16x4 into one 16x8.
+            // Then we can get only the most significant bits to 8
+            uint8x8_t wx0_dst = vmovn_u16( vcombine_u16( vmovn_u32(x_data_0), vmovn_u32(x_data_1) ) );
+            
+            // Now we can merge all of the above into 16x8 and convert to 8bits.
+            uint16x8_t x0_dst_16b = vcombine_u16(x0_dst_0, x0_dst_1);
+            
+            // We can now generate weights for every corner.
+            // We are multiplying two pseudo floating point values, shifted by 8 bits to the left, so that they are integers.
+            // Therefore we need to shift one of the 8 bits back to the right, to again obtain a pseudo-floating point integer.
+            uint8x8_t wx0y0_dst = vshrn_n_u16(vmull_u8(wx0_dst, wy0_dst), 8);
+            uint8x8_t wx0y1_dst = vshrn_n_u16(vmull_u8(wx0_dst, wy1_dst), 8);
+            
+            // Get the offset to the offset.
+            uint16_t x_fb_offset = vgetq_lane_u16(x0_dst_16b, 0);
+            
+            // Read the buffer and drop the low bytes to get an 8-bit value from a 16-bit Litte Endian buffer.
+            uint32_t fb_offset = fb_width*y0 + x_offset + x_fb_offset;
+            if (fb_offset+24 >= fb_size) {
+                DEBUG("Buffer overflow");
+                return y_dst*w + x_offset;
+            }
+            uint8x8_t y_buff[4][3];
+            for (uint8_t y=0; y<4; y++) {
+                y_buff[y][0] = vld2_u8((uint8_t*)&fb_ptr[fb_width*y + fb_offset   ]).val[1];
+                y_buff[y][1] = vld2_u8((uint8_t*)&fb_ptr[fb_width*y + fb_offset+ 8]).val[1];
+                y_buff[y][2] = vld2_u8((uint8_t*)&fb_ptr[fb_width*y + fb_offset+16]).val[1];
+            }
+            // Lookup the values for the pixels in the fb.
+            uint8x8_t pixels[4][4];
+            for (uint8_t y=0; y<4; y++) {
+                for (uint8_t x=0; x<4; x++) {
+                    uint8x8_t pixels_x = vmovn_u16(vsubq_u16(x0_dst_16b, vdupq_n_u16(x_fb_offset-x)));
+                    
+                    uint8x8_t pixels_0 = vtbl1_u8(y_buff[y][0], pixels_x);
+                    uint8x8_t pixels_1 = vtbl1_u8(y_buff[y][1], vsub_u8(pixels_x, vdup_n_u8( 8)));
+                    uint8x8_t pixels_2 = vtbl1_u8(y_buff[y][2], vsub_u8(pixels_x, vdup_n_u8(16)));
+                    pixels[x][y] = veor_u8(pixels_0,     pixels_1);
+                    pixels[x][y] = veor_u8(pixels[x][y], pixels_2);
+                }
+                uint16x8_t a;
+                a = vaddl_u8(pixels[1][y], pixels[2][y]);
+                a = vaddl_u16(pixels[1][y], pixels[2][y]);
+                pixels[x][y] = veor_u8(pixels[x][y], pixels_2);
+            }
+            
+            // Multiply the pixels by their weights.
+            x0y0_pixels = vshrn_n_u16(vmull_u8(x0y0_pixels, wx0y0_dst), 8);
+            x0y1_pixels = vshrn_n_u16(vmull_u8(x0y1_pixels, wx0y1_dst), 8);
+            x1y0_pixels = vshrn_n_u16(vmull_u8(x1y0_pixels, wx1y0_dst), 8);
+            x1y1_pixels = vshrn_n_u16(vmull_u8(x1y1_pixels, wx1y1_dst), 8);
+            
+            //DEBUG("new:["<<std::to_string(x_offset)<<", "<<std::to_string(y_dst)<<"], old:["<<std::to_string(x_offset + x_fb_offset)<<", "<<std::to_string(y0)<<"] "<<std::to_string(fb_offset));
+            
+            // Finally sum up all the corners and write them to the buffer.
+            uint8x8_t x0_pixels = vqadd_u8(x0y0_pixels, x0y1_pixels);
+            uint8x8_t x1_pixels = vqadd_u8(x1y0_pixels, x1y1_pixels);
+            vst1_u8(&buffer[(y_dst + y_start)*w + x_offset + x_start], vqadd_u8(x0_pixels, x1_pixels));
+        }
+    }
+    */
+    return w*h;
+}
+int UVCfb::getResizedFb_bilinear_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
+    const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
+    const auto fb_height = m_fb_height;
+    const auto fb_width = m_fb_width;
+    const auto fb_size = fb_height * fb_width;
+    
+    // Make these variables known at the end of loop
+    uint16_t x_offset;
+    uint16_t y_dst;
+    
+    // Generate helper vectors
+    const uint16_t vect_rising_b[] = {0, 1, 2, 3};
+    const uint16x4_t vect_rising = vld1_u16(vect_rising_b);
+    const uint16x4_t vect_0x01 = vdup_n_u16(0x01);
+    const uint8x8_t vect_0xFF = vdup_n_u8(0xFF);
+    
+    // Calculate ratios minus 1. These will always be 0.0<ratio<1.0 then scaled up to 8bits
+    // 1 + at the beginning ensures better precision on average
+    const uint8_t x_ratio = 1 + ((fb_width << 8)/w) & 0xFF;
+    const uint8_t y_ratio = 1 + ((fb_height << 8)/h) & 0xFF;
+
+    for (y_dst=0; y_dst<h; y_dst++) {
+        // Get y0 and y1 of the averaging square
+        uint16_t y0 = ((y_dst * y_ratio) >> 8) + y_dst;
+        // Get w_y0 and w_y1 weights for the square
+        uint8x8_t wy0_dst = vdup_n_u8(       (y_dst * y_ratio) & 0xFF);
+        uint8x8_t wy1_dst = vdup_n_u8(0xFF - (y_dst * y_ratio) & 0xFF);
+        
+        for (x_offset=0; x_offset<w; x_offset+=8) {
             // NOTE: There are no intrinsics for 32x8 or 16x8, so we need to repeat most of the steps twice.
 
             // Initialize our x coordinates with a rising list and add to it the current x_offset.
@@ -103,23 +211,25 @@ int UVCfb::getResizedFb_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x
                 DEBUG("Buffer overflow");
                 return y_dst*w + x_offset;
             }
-            uint8x8_t y_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_offset  ]).val[1];
-            uint8x8_t y_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_offset+8]).val[1];
+            uint8x8_t y0_buff_0 = vld2_u8((uint8_t*)&fb_ptr[         fb_offset  ]).val[1];
+            uint8x8_t y0_buff_1 = vld2_u8((uint8_t*)&fb_ptr[         fb_offset+8]).val[1];
+            uint8x8_t y1_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_width+fb_offset  ]).val[1];
+            uint8x8_t y1_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_width+fb_offset+8]).val[1];
             // Lookup the values for the x0,y0 pixels in the fb.
-            uint8x8_t x0y0_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
-            uint8x8_t x0y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
+            uint8x8_t x0y0_pixels_0 = vtbl1_u8(y0_buff_0, x0_dst);
+            uint8x8_t x0y0_pixels_1 = vtbl1_u8(y0_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
             uint8x8_t x0y0_pixels = veor_u8(x0y0_pixels_0, x0y0_pixels_1);
             // Lookup the values for the x1,y0 pixels in the fb.
-            uint8x8_t x1y0_pixels_0 = vtbl1_u8(y_buff_0, x1_dst);
-            uint8x8_t x1y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
+            uint8x8_t x1y0_pixels_0 = vtbl1_u8(y0_buff_0, x1_dst);
+            uint8x8_t x1y0_pixels_1 = vtbl1_u8(y0_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
             uint8x8_t x1y0_pixels = veor_u8(x1y0_pixels_0, x1y0_pixels_1);
             // Lookup the values for the x0,y1 pixels in the fb.
-            uint8x8_t x0y1_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
-            uint8x8_t x0y1_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
+            uint8x8_t x0y1_pixels_0 = vtbl1_u8(y1_buff_0, x0_dst);
+            uint8x8_t x0y1_pixels_1 = vtbl1_u8(y1_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
             uint8x8_t x0y1_pixels = veor_u8(x0y1_pixels_0, x0y1_pixels_1);
             // Lookup the values for the x1,y1 pixels in the fb.
-            uint8x8_t x1y1_pixels_0 = vtbl1_u8(y_buff_0, x1_dst);
-            uint8x8_t x1y1_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
+            uint8x8_t x1y1_pixels_0 = vtbl1_u8(y1_buff_0, x1_dst);
+            uint8x8_t x1y1_pixels_1 = vtbl1_u8(y1_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
             uint8x8_t x1y1_pixels = veor_u8(x1y1_pixels_0, x1y1_pixels_1);
             
             // Multiply the pixels by their weights.
@@ -137,13 +247,17 @@ int UVCfb::getResizedFb_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x
         }
     }
     
-    return w*h;
+    return y_dst*w + x_offset;
 }
-int UVCfb::getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
+int UVCfb::getResizedFb_bilinear_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
     const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
     const auto fb_height = m_fb_height;
     const auto fb_width = m_fb_width;
     const auto fb_size = fb_height * fb_width;
+    
+    // Make these variables known at the end of loop
+    uint16_t x_offset;
+    uint16_t y_dst;
     
     // Generate helper vectors
     const uint16_t vect_rising_b[] = {0, 1, 2, 3};
@@ -156,14 +270,14 @@ int UVCfb::getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t 
     const uint16_t x_ratio = 1 + ((fb_width << 16)/w) & 0xFFFF;
     const uint16_t y_ratio = 1 + ((fb_height << 16)/h) & 0xFFFF;
 
-    for (uint16_t y_dst=0; y_dst<h; y_dst++) {
+    for (y_dst=0; y_dst<h; y_dst++) {
         // Get y0 and y1 of the averaging square
         uint16_t y0 = ((y_dst * y_ratio) >> 16) + y_dst;
         // Get w_y0 and w_y1 weights for the square
         uint16x4_t wy0_dst = vdup_n_u16(         (y_dst * y_ratio) & 0xFFFF);
         uint16x4_t wy1_dst = vdup_n_u16(0xFFFF - (y_dst * y_ratio) & 0xFFFF);
         
-        for (uint16_t x_offset=0; x_offset<w; x_offset+=8) {
+        for (x_offset=0; x_offset<w; x_offset+=8) {
             // NOTE: There are no intrinsics for 32x8 or 16x8, so we need to repeat most of the steps twice.
 
             // Initialize our x coordinates with a rising list and add to it the current x_offset.
@@ -210,23 +324,25 @@ int UVCfb::getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t 
                 DEBUG("Buffer overflow");
                 return y_dst*w + x_offset;
             }
-            uint8x8_t y_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_offset  ]).val[1];
-            uint8x8_t y_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_offset+8]).val[1];
+            uint8x8_t y0_buff_0 = vld2_u8((uint8_t*)&fb_ptr[         fb_offset  ]).val[1];
+            uint8x8_t y0_buff_1 = vld2_u8((uint8_t*)&fb_ptr[         fb_offset+8]).val[1];
+            uint8x8_t y1_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_width+fb_offset  ]).val[1];
+            uint8x8_t y1_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_width+fb_offset+8]).val[1];
             // Lookup the values for the x0,y0 pixels in the fb.
-            uint8x8_t x0y0_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
-            uint8x8_t x0y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
+            uint8x8_t x0y0_pixels_0 = vtbl1_u8(y0_buff_0, x0_dst);
+            uint8x8_t x0y0_pixels_1 = vtbl1_u8(y0_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
             uint16x8_t x0y0_pixels = vmovl_u8(veor_u8(x0y0_pixels_0, x0y0_pixels_1));
             // Lookup the values for the x1,y0 pixels in the fb.
-            uint8x8_t x1y0_pixels_0 = vtbl1_u8(y_buff_0, x1_dst);
-            uint8x8_t x1y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
+            uint8x8_t x1y0_pixels_0 = vtbl1_u8(y0_buff_0, x1_dst);
+            uint8x8_t x1y0_pixels_1 = vtbl1_u8(y0_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
             uint16x8_t x1y0_pixels = vmovl_u8(veor_u8(x1y0_pixels_0, x1y0_pixels_1));
             // Lookup the values for the x0,y1 pixels in the fb.
-            uint8x8_t x0y1_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
-            uint8x8_t x0y1_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
+            uint8x8_t x0y1_pixels_0 = vtbl1_u8(y1_buff_0, x0_dst);
+            uint8x8_t x0y1_pixels_1 = vtbl1_u8(y1_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
             uint16x8_t x0y1_pixels = vmovl_u8(veor_u8(x0y1_pixels_0, x0y1_pixels_1));
             // Lookup the values for the x1,y1 pixels in the fb.
-            uint8x8_t x1y1_pixels_0 = vtbl1_u8(y_buff_0, x1_dst);
-            uint8x8_t x1y1_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
+            uint8x8_t x1y1_pixels_0 = vtbl1_u8(y1_buff_0, x1_dst);
+            uint8x8_t x1y1_pixels_1 = vtbl1_u8(y1_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
             uint16x8_t x1y1_pixels = vmovl_u8(veor_u8(x1y1_pixels_0, x1y1_pixels_1));
             
             // Multiply the pixels by their weights.
@@ -251,8 +367,11 @@ int UVCfb::getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t 
     return y_dst*w + x_offset;
 }
 int UVCfb::rotateBuffer(uint8_t* in_buffer, uint8_t* out_buffer, uint16_t w, uint16_t h) {
-    for (uint16_t y=0; y<h; y+=8) {
-        for (uint16_t x=0; x<w; x+=8) {
+    uint16_t y;
+    uint16_t x;
+    
+    for (y=0; y<h; y+=8) {
+        for (x=0; x<w; x+=8) {
             uint8x8_t row[] = {
                 vld1_u8(&in_buffer[x + (y+0)*w]),
                 vld1_u8(&in_buffer[x + (y+1)*w]),
@@ -291,18 +410,21 @@ int UVCfb::getRotatedFb(uint8_t* out_buffer) {
     const auto fb_height = m_fb_height;
     const auto fb_width = m_fb_width;
     const auto fb_size = fb_height * fb_width;
+    
+    uint16_t y;
+    uint16_t x;
 
-    for (uint16_t y=0; y<h; y+=8) {
-        for (uint16_t x=0; x<w; x+=8) {
+    for (y=0; y<fb_height; y+=8) {
+        for (x=0; x<fb_width; x+=8) {
             uint8x8_t row[] = {
-                vld2_u8((uint8_t*)&fb_ptr[x + (y+0)*w]),
-                vld2_u8((uint8_t*)&fb_ptr[x + (y+1)*w]),
-                vld2_u8((uint8_t*)&fb_ptr[x + (y+2)*w]),
-                vld2_u8((uint8_t*)&fb_ptr[x + (y+3)*w]),
-                vld2_u8((uint8_t*)&fb_ptr[x + (y+4)*w]),
-                vld2_u8((uint8_t*)&fb_ptr[x + (y+5)*w]),
-                vld2_u8((uint8_t*)&fb_ptr[x + (y+6)*w]),
-                vld2_u8((uint8_t*)&fb_ptr[x + (y+7)*w])
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+0)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+1)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+2)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+3)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+4)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+5)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+6)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+7)*fb_width]).val[1]
             };
             vtrn8(row[0], row[1]);
             vtrn8(row[2], row[3]);
@@ -320,7 +442,7 @@ int UVCfb::getRotatedFb(uint8_t* out_buffer) {
             vtrn16(row[3], row[7]);
             
             for (uint8_t ix=0; ix<sizeof(row); ix++) {
-                vst1_u8(&out_buffer[(x+ix)*h + y], row[ix]);
+                vst1_u8(&out_buffer[(x+ix)*fb_height + y], row[ix]);
             }
         }
     }
@@ -349,11 +471,11 @@ int UVCfb::getJPEG(tjhandle tjCompress_ptr, uint8_t* out_buffer, long unsigned i
         getRotatedFb(m_tmp_buffer[1]);
     } else if (format.width > format.height) {
         memset(m_tmp_buffer[0], 0, m_tmp_buffer_size[0]);
-        getResizedFb(m_tmp_buffer[0], format.real_width, format.real_height, (format.width-format.real_width)/2, (format.height-format.real_height)/2, 16);
+        getResizedFb(m_tmp_buffer[0], format.real_width, format.real_height, (format.width-format.real_width)/2, (format.height-format.real_height)/2, RESIZE_BILINEAR_16BIT);
         rotateBuffer(m_tmp_buffer[0], m_tmp_buffer[1], format.real_width, format.real_height);
     } else {
         memset(m_tmp_buffer[1], 0, m_tmp_buffer_size[1]);
-        getResizedFb(m_tmp_buffer[1], format.real_width, format.real_height, (format.width-format.real_width)/2, (format.height-format.real_height)/2, 16);
+        getResizedFb(m_tmp_buffer[1], format.real_width, format.real_height, (format.width-format.real_width)/2, (format.height-format.real_height)/2, RESIZE_BILINEAR_16BIT);
     }
     ret = tjCompress2(tjCompress_ptr, m_tmp_buffer[1],
         format.width, 0, format.height, m_pixelFormat,
@@ -368,7 +490,7 @@ void UVCfb::transcoder() {
     // Perform sanity checks:
     struct uvc_format_info format = g_format;
     if ((format.width < m_fb_width/2) || (format.width > m_fb_width) || (format.height < m_fb_height/2) || (format.height > m_fb_height)) {
-        ERROR("Invalid format dimensions! ("<<std::to_string(format.width)<<"x"<<std::to_string(format.height)<<")");
+        ERR("Invalid format dimensions! ("<<std::to_string(format.width)<<"x"<<std::to_string(format.height)<<")");
     }
     
     // Create mutex:

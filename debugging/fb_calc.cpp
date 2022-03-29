@@ -14,8 +14,26 @@ uint16_t m_fb_height = 1872;
 uint32_t m_fb_size = m_fb_width*m_fb_height*2;
 uint32_t m_fb_size2 = m_fb_width*m_fb_height;
 uint8_t m_fb[1404*1872*2];
+#define vtrn8(a, b) \
+{ \
+uint8x8x2_t _transpose_tmp = vtrn_u8(a, b); \
+a = _transpose_tmp.val[0]; \
+b = _transpose_tmp.val[1]; \
+}
+#define vtrn16(a, b) \
+{ \
+uint16x4x2_t _transpose_tmp = vtrn_u16(vreinterpret_u16_u8(a), vreinterpret_u16_u8(b)); \
+a = vreinterpret_u8_u16(_transpose_tmp.val[0]); \
+b = vreinterpret_u8_u16(_transpose_tmp.val[1]); \
+}
+#define vtrn32(a, b) \
+{ \
+uint32x2x2_t _transpose_tmp = vtrn_u32(vreinterpret_u32_u8(a), vreinterpret_u32_u8(b)); \
+a = vreinterpret_u8_u32(_transpose_tmp.val[0]); \
+b = vreinterpret_u8_u32(_transpose_tmp.val[1]); \
+}
     
-int getResizedFb_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
+int getResizedFb_bilinear_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
     const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
     const auto fb_height = m_fb_height;
     const auto fb_width = m_fb_width;
@@ -80,23 +98,25 @@ int getResizedFb_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start,
                 DEBUG("Buffer overflow");
                 return y_dst*w + x_offset;
             }
-            uint8x8_t y_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_offset  ]).val[1];
-            uint8x8_t y_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_offset+8]).val[1];
+            uint8x8_t y0_buff_0 = vld2_u8((uint8_t*)&fb_ptr[         fb_offset  ]).val[1];
+            uint8x8_t y0_buff_1 = vld2_u8((uint8_t*)&fb_ptr[         fb_offset+8]).val[1];
+            uint8x8_t y1_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_width+fb_offset  ]).val[1];
+            uint8x8_t y1_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_width+fb_offset+8]).val[1];
             // Lookup the values for the x0,y0 pixels in the fb.
-            uint8x8_t x0y0_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
-            uint8x8_t x0y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
+            uint8x8_t x0y0_pixels_0 = vtbl1_u8(y0_buff_0, x0_dst);
+            uint8x8_t x0y0_pixels_1 = vtbl1_u8(y0_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
             uint8x8_t x0y0_pixels = veor_u8(x0y0_pixels_0, x0y0_pixels_1);
             // Lookup the values for the x1,y0 pixels in the fb.
-            uint8x8_t x1y0_pixels_0 = vtbl1_u8(y_buff_0, x1_dst);
-            uint8x8_t x1y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
+            uint8x8_t x1y0_pixels_0 = vtbl1_u8(y0_buff_0, x1_dst);
+            uint8x8_t x1y0_pixels_1 = vtbl1_u8(y0_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
             uint8x8_t x1y0_pixels = veor_u8(x1y0_pixels_0, x1y0_pixels_1);
             // Lookup the values for the x0,y1 pixels in the fb.
-            uint8x8_t x0y1_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
-            uint8x8_t x0y1_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
+            uint8x8_t x0y1_pixels_0 = vtbl1_u8(y1_buff_0, x0_dst);
+            uint8x8_t x0y1_pixels_1 = vtbl1_u8(y1_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
             uint8x8_t x0y1_pixels = veor_u8(x0y1_pixels_0, x0y1_pixels_1);
             // Lookup the values for the x1,y1 pixels in the fb.
-            uint8x8_t x1y1_pixels_0 = vtbl1_u8(y_buff_0, x1_dst);
-            uint8x8_t x1y1_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
+            uint8x8_t x1y1_pixels_0 = vtbl1_u8(y1_buff_0, x1_dst);
+            uint8x8_t x1y1_pixels_1 = vtbl1_u8(y1_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
             uint8x8_t x1y1_pixels = veor_u8(x1y1_pixels_0, x1y1_pixels_1);
             
             // Multiply the pixels by their weights.
@@ -116,11 +136,15 @@ int getResizedFb_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start,
     
     return w*h;
 }
-int getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
+int getResizedFb_bilinear_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
     const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
     const auto fb_height = m_fb_height;
     const auto fb_width = m_fb_width;
     const auto fb_size = fb_height * fb_width;
+    
+    // Make these variables known at the end of loop
+    uint16_t x_offset;
+    uint16_t y_dst;
     
     // Generate helper vectors
     const uint16_t vect_rising_b[] = {0, 1, 2, 3};
@@ -133,14 +157,14 @@ int getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start
     const uint16_t x_ratio = 1 + ((fb_width << 16)/w) & 0xFFFF;
     const uint16_t y_ratio = 1 + ((fb_height << 16)/h) & 0xFFFF;
 
-    for (uint16_t y_dst=0; y_dst<h; y_dst++) {
+    for (y_dst=0; y_dst<h; y_dst++) {
         // Get y0 and y1 of the averaging square
         uint16_t y0 = ((y_dst * y_ratio) >> 16) + y_dst;
         // Get w_y0 and w_y1 weights for the square
         uint16x4_t wy0_dst = vdup_n_u16(         (y_dst * y_ratio) & 0xFFFF);
         uint16x4_t wy1_dst = vdup_n_u16(0xFFFF - (y_dst * y_ratio) & 0xFFFF);
         
-        for (uint16_t x_offset=0; x_offset<w; x_offset+=8) {
+        for (x_offset=0; x_offset<w; x_offset+=8) {
             // NOTE: There are no intrinsics for 32x8 or 16x8, so we need to repeat most of the steps twice.
 
             // Initialize our x coordinates with a rising list and add to it the current x_offset.
@@ -187,23 +211,25 @@ int getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start
                 DEBUG("Buffer overflow");
                 return y_dst*w + x_offset;
             }
-            uint8x8_t y_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_offset  ]).val[1];
-            uint8x8_t y_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_offset+8]).val[1];
+            uint8x8_t y0_buff_0 = vld2_u8((uint8_t*)&fb_ptr[         fb_offset  ]).val[1];
+            uint8x8_t y0_buff_1 = vld2_u8((uint8_t*)&fb_ptr[         fb_offset+8]).val[1];
+            uint8x8_t y1_buff_0 = vld2_u8((uint8_t*)&fb_ptr[fb_width+fb_offset  ]).val[1];
+            uint8x8_t y1_buff_1 = vld2_u8((uint8_t*)&fb_ptr[fb_width+fb_offset+8]).val[1];
             // Lookup the values for the x0,y0 pixels in the fb.
-            uint8x8_t x0y0_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
-            uint8x8_t x0y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
+            uint8x8_t x0y0_pixels_0 = vtbl1_u8(y0_buff_0, x0_dst);
+            uint8x8_t x0y0_pixels_1 = vtbl1_u8(y0_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
             uint16x8_t x0y0_pixels = vmovl_u8(veor_u8(x0y0_pixels_0, x0y0_pixels_1));
             // Lookup the values for the x1,y0 pixels in the fb.
-            uint8x8_t x1y0_pixels_0 = vtbl1_u8(y_buff_0, x1_dst);
-            uint8x8_t x1y0_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
+            uint8x8_t x1y0_pixels_0 = vtbl1_u8(y0_buff_0, x1_dst);
+            uint8x8_t x1y0_pixels_1 = vtbl1_u8(y0_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
             uint16x8_t x1y0_pixels = vmovl_u8(veor_u8(x1y0_pixels_0, x1y0_pixels_1));
             // Lookup the values for the x0,y1 pixels in the fb.
-            uint8x8_t x0y1_pixels_0 = vtbl1_u8(y_buff_0, x0_dst);
-            uint8x8_t x0y1_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
+            uint8x8_t x0y1_pixels_0 = vtbl1_u8(y1_buff_0, x0_dst);
+            uint8x8_t x0y1_pixels_1 = vtbl1_u8(y1_buff_1, vsub_u8(x0_dst, vdup_n_u8(8)));
             uint16x8_t x0y1_pixels = vmovl_u8(veor_u8(x0y1_pixels_0, x0y1_pixels_1));
             // Lookup the values for the x1,y1 pixels in the fb.
-            uint8x8_t x1y1_pixels_0 = vtbl1_u8(y_buff_0, x1_dst);
-            uint8x8_t x1y1_pixels_1 = vtbl1_u8(y_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
+            uint8x8_t x1y1_pixels_0 = vtbl1_u8(y1_buff_0, x1_dst);
+            uint8x8_t x1y1_pixels_1 = vtbl1_u8(y1_buff_1, vsub_u8(x1_dst, vdup_n_u8(8)));
             uint16x8_t x1y1_pixels = vmovl_u8(veor_u8(x1y1_pixels_0, x1y1_pixels_1));
             
             // Multiply the pixels by their weights.
@@ -225,14 +251,52 @@ int getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start
         }
     }
     
-    return w*h;
+    return y_dst*w + x_offset;
+}
+int rotateBuffer(uint8_t* in_buffer, uint8_t* out_buffer, uint16_t w, uint16_t h) {
+    uint16_t y;
+    uint16_t x;
+    
+    for (y=0; y<h; y+=8) {
+        for (x=0; x<w; x+=8) {
+            uint8x8_t row[] = {
+                vld1_u8(&in_buffer[x + (y+0)*w]),
+                vld1_u8(&in_buffer[x + (y+1)*w]),
+                vld1_u8(&in_buffer[x + (y+2)*w]),
+                vld1_u8(&in_buffer[x + (y+3)*w]),
+                vld1_u8(&in_buffer[x + (y+4)*w]),
+                vld1_u8(&in_buffer[x + (y+5)*w]),
+                vld1_u8(&in_buffer[x + (y+6)*w]),
+                vld1_u8(&in_buffer[x + (y+7)*w])
+            };
+            vtrn8(row[0], row[1]);
+            vtrn8(row[2], row[3]);
+            vtrn8(row[4], row[5]);
+            vtrn8(row[6], row[7]);
+            
+            vtrn16(row[0], row[2]);
+            vtrn16(row[1], row[3]);
+            vtrn16(row[4], row[6]);
+            vtrn16(row[5], row[7]);
+            
+            vtrn32(row[0], row[4]);
+            vtrn32(row[1], row[5]);
+            vtrn32(row[2], row[6]);
+            vtrn32(row[3], row[7]);
+            
+            for (uint8_t ix=0; ix<sizeof(row); ix++) {
+                vst1_u8(&out_buffer[(x+ix)*h + y], row[ix]);
+            }
+        }
+    }
+    
+    return x*y;
 }
 int getResizedFb(uint8_t* buffer, uint16_t realw, uint16_t realh, uint16_t w, uint16_t h, uint8_t precision) {
-    printf("%d %d\n", (w-realw)/2, (h-realh)/2);
     if (precision == 16) {
-        return getResizedFb_16bit(buffer, realw, realh, (w-realw)/2, (h-realh)/2);
+        return getResizedFb_bilinear_16bit(buffer, realw, realh, (w-realw)/2, (h-realh)/2);
     } else {
-        return getResizedFb_8bit(buffer, realw, realh, (w-realw)/2, (h-realh)/2);
+        return getResizedFb_bilinear_8bit(buffer, realw, realh, (w-realw)/2, (h-realh)/2);
     }
 }
 int getFb(uint8_t* buffer) {
@@ -257,10 +321,11 @@ void write(char const path[], uint8_t* buffer, uint32_t buffer_sz) {
     fwrite(buffer, 1, buffer_sz, output_file);
     fclose(output_file);
 }
+uint8_t buffer[1404*1872*2];
+uint8_t buffer2[1404*1872*2];
 
 int main(int argc, char* argv[]) {
     uint32_t size = 0;
-    uint8_t buffer[m_fb_size];
 
     printf("Reading!\n");
     FILE* in_file = fopen("img.data", "rb");
@@ -286,6 +351,11 @@ int main(int argc, char* argv[]) {
     size = getResizedFb(buffer, 720, 960, 720, 1280, 16);
     write("img.16.data", buffer, size);
     printf("Done 16 bit!\n");
-
+    
+    memset(buffer2, 0, m_fb_size);
+    size = rotateBuffer(buffer, buffer2, 720, 1280);
+    write("img.16.rot.data", buffer2, size);
+    printf("Done 16 bit rotated!\n");
+    
     return 0;
 }

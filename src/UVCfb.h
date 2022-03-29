@@ -40,6 +40,9 @@ private:
     int m_pixelFormat = 0;
     int m_jpegSubsamp = 0;
     
+    // Rescalers
+    enum t_rescalers{RESIZE_BILINEAR_16BIT, RESIZE_BILINEAR_8BIT, RESIZE_BICUBIC_8BIT};
+    
     // TurboJPEG constants
     const int m_jpegFlags = TJFLAG_NOREALLOC;
     const int m_jpegQuality = 90;
@@ -72,9 +75,10 @@ private:
 
     int getFb(uint8_t* buffer);
     int getRotatedFb(uint8_t* out_buffer);
-    int getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start=0, uint16_t y_start=0, uint8_t precision=8);
-    int getResizedFb_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start=0, uint16_t y_start=0);
-    int getResizedFb_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start=0, uint16_t y_start=0);
+    int getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start=0, uint16_t y_start=0, uint8_t type=RESIZE_BILINEAR_16BIT);
+    int getResizedFb_bicubic_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start=0, uint16_t y_start=0);
+    int getResizedFb_bilinear_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start=0, uint16_t y_start=0);
+    int getResizedFb_bilinear_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start=0, uint16_t y_start=0);
 
     void transcoder();
     void fill_buffer(struct v4l2_buffer* ubuf);
