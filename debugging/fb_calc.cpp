@@ -4,7 +4,13 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#ifdef __ARM_NEON__
 #include <arm_neon.h>
+#else
+#define USE_SSE4
+#define NEON2SSE_DISABLE_PERFORMANCE_WARNING
+#include "NEON_2_SSE.h"
+#endif
 #include <cstring>
 
 #define DEBUG(msg)
@@ -14,6 +20,8 @@ uint16_t m_fb_height = 1872;
 uint32_t m_fb_size = m_fb_width*m_fb_height*2;
 uint32_t m_fb_size2 = m_fb_width*m_fb_height;
 uint8_t m_fb[1404*1872*2];
+uint8_t m_tmp_buffer[1404*1872];
+uint8x8_t m_tmp_buffer_neon[1404*1872/8];
 #define vtrn8(a, b) \
 { \
 uint8x8x2_t _transpose_tmp = vtrn_u8(a, b); \
@@ -32,7 +40,82 @@ uint32x2x2_t _transpose_tmp = vtrn_u32(vreinterpret_u32_u8(a), vreinterpret_u32_
 a = vreinterpret_u8_u32(_transpose_tmp.val[0]); \
 b = vreinterpret_u8_u32(_transpose_tmp.val[1]); \
 }
+
+int getRotatedFb(uint8_t* out_buffer) {
+    const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
+    const auto fb_height = m_fb_height;
+    const auto fb_width = m_fb_width;
+    const auto fb_size = fb_height * fb_width;
     
+    uint16_t y;
+    uint16_t x;
+
+    for (y=0; y<fb_height; y+=8) {
+        for (x=0; x<fb_width; x+=8) {
+            uint8x8_t row[] = {
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+0)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+1)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+2)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+3)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+4)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+5)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+6)*fb_width]).val[1],
+                vld2_u8((uint8_t*)&fb_ptr[x + (y+7)*fb_width]).val[1]
+            };
+            vtrn8(row[0], row[1]);
+            vtrn8(row[2], row[3]);
+            vtrn8(row[4], row[5]);
+            vtrn8(row[6], row[7]);
+            
+            vtrn16(row[0], row[2]);
+            vtrn16(row[1], row[3]);
+            vtrn16(row[4], row[6]);
+            vtrn16(row[5], row[7]);
+            
+            vtrn16(row[0], row[4]);
+            vtrn16(row[1], row[5]);
+            vtrn16(row[2], row[6]);
+            vtrn16(row[3], row[7]);
+            
+            for (uint8_t ix=0; ix<sizeof(row); ix++) {
+                vst1_u8(&out_buffer[(x+ix)*fb_height + y], row[ix]);
+            }
+        }
+    }
+    
+    return x*y;
+}
+enum t_rescalers{RESIZE_BILINEAR_16BIT, RESIZE_BILINEAR_8BIT, RESIZE_BICUBIC_8BIT};
+int getFb(uint8_t* buffer) {
+    const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
+    const auto fb_height = m_fb_height;
+    const auto fb_width = m_fb_width;
+    const auto fb_size = fb_height * fb_width;
+
+    // Read 2x8x16bit pixels (2x128bits), store 2x8x8bit pixels (2x64bits)
+    for (uint32_t i=0; i<fb_size/8; i++) {
+        vst1_u8(&buffer[i*8], vld2_u8((uint8_t*)&fb_ptr[i*8]).val[1]);
+    }
+    
+    return fb_size/2;
+}
+int getFb(uint8x8_t* buffer) {
+    const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
+    const auto fb_height = m_fb_height;
+    const auto fb_width = m_fb_width;
+    const auto fb_width_div8 = m_fb_width/8;
+    
+    uint32_t x, y;
+    for (y=0; y<fb_height; y++) {
+        uint32_t y_dbuff = y*fb_width_div8;
+        uint32_t y_fbuff = y*fb_width;
+        for (x=0; x<fb_width_div8; x++) {
+            buffer[y_dbuff + x] = vld2_u8((uint8_t*)&fb_ptr[y_fbuff + x*8]).val[1];
+        }
+    }
+    
+    return y*fb_width_div8 + x;
+}
 int getResizedFb_bilinear_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
     const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
     const auto fb_height = m_fb_height;
@@ -253,6 +336,139 @@ int getResizedFb_bilinear_16bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_
     
     return y_dst*w + x_offset;
 }
+
+inline static int16x8_t bicubicHermite(uint16x8_t* pixels, uint16x8_t w) {
+    // -A/2 + 3B/2 - 3C/2 + D/2
+    int16x8_t hermite_a_0 = vshrq_n_s16(vsubq_s16(pixels[3], pixels[0]), 1); // -A/2 + D/2
+    int16x8_t hermite_a_1 = vshrq_n_s16(vsubq_s16(pixels[1], pixels[2]), 1); //  B/2 - C/2
+    int16x8_t hermite_a_2 = vsubq_s16(pixels[1], pixels[2]);               //  B   - C
+    // Sum components:
+    int16x8_t hermite_a = vaddq_s16(hermite_a_0, hermite_a_1); // -A/2 + B/2 - C/2 + D/2
+    hermite_a = vaddq_s16(hermite_a, hermite_a_2); // -A/2 + 3B/2 - 3C/2 + D/2
+    // Power a*w^2:
+    hermite_a = vshrq_n_s16(vmulq_s16(hermite_a, w), 8); // a*w
+    hermite_a = vshrq_n_s16(vmulq_s16(hermite_a, w), 8); //  *w
+    hermite_a = vshrq_n_s16(vmulq_s16(hermite_a, w), 8); //  *w
+    
+    // A - 5B/2 + 2C - D/2
+    int16x8_t hermite_b_0 = vqshlq_n_s16(vsubq_s16(pixels[2], pixels[1]), 1); // -2B   + 2C
+    int16x8_t hermite_b_1 = vshrq_n_s16(vaddq_s16(pixels[3], pixels[1]), 1);  //  B/2  +  D/2
+    // Sum components:
+    int16x8_t hermite_b = vsubq_s16(hermite_b_0, hermite_b_1); // -5B/2 + 2C - D/2
+    hermite_b = vaddq_s16(hermite_b, pixels[0]); // A - 5B/2 + 2C - D/2
+    // Power b*w^2:
+    hermite_b = vshrq_n_s16(vmulq_s16(hermite_b, w), 8); // b*w
+    hermite_b = vshrq_n_s16(vmulq_s16(hermite_b, w), 8); //  *w
+    
+    // -A/2 + C/2
+    int16x8_t hermite_c = vqshlq_n_s16(vsubq_s16(pixels[2], pixels[0]), 1); // -A/2 + C/2
+    // Power c*w^1:
+    hermite_c = vshrq_n_s16(vmulq_s16(hermite_b, w), 8); // c*w
+    
+    // a*t^3 + b*t^2 + c*t + B
+    int16x8_t hermite_sum = vaddq_s16(hermite_a, hermite_b); // a*t^3 + b*t^2
+    hermite_sum = vaddq_s16(hermite_sum, hermite_c); // a*t^3 + b*t^2 + c*t
+    hermite_sum = vaddq_s16(hermite_sum, pixels[1]); // a*t^3 + b*t^2 + c*t + B
+    
+    return hermite_sum;
+}
+inline static int16x8_t bicubicHermite(uint8x8_t* pixels_0, uint16x8_t w) {
+    uint16x8_t pixels[4] = {
+        vreinterpret_s16_u16(vmovl_u8(pixels_0[0])),
+        vreinterpret_s16_u16(vmovl_u8(pixels_0[1])),
+        vreinterpret_s16_u16(vmovl_u8(pixels_0[2])),
+        vreinterpret_s16_u16(vmovl_u8(pixels_0[3]))
+    };
+    return bicubicHermite(pixels, w);
+}
+int getResizedFb_bicubic_8bit(uint8_t* buff_dst, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start) {
+    const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
+    const auto fb_height = m_fb_height;
+    const auto fb_width_div8 = m_fb_width/8;
+    const auto fb_width = fb_width_div8*8;
+    
+    // Make these variables known at the end of loop
+    uint16_t x_dst;
+    uint16_t y_dst;
+    
+    // Generate helper vectors
+    const uint16_t vect_rising_b[] = {0, 1, 2, 3};
+    const uint16x4_t vect_rising = vld1_u16(vect_rising_b);
+    // Calculate ratios minus 1. These will always be 0.0<ratio<1.0 then scaled up to 8bits
+    // 1 + at the beginning ensures better precision on average.
+    const uint8_t x_ratio = 1 + ((fb_width  << 8)/w) & 0xFF;
+    const uint8_t y_ratio = 1 + ((fb_height << 8)/h) & 0xFF;
+    // Load the framebuffer:
+    if (w > h) {
+        getRotatedFb(m_tmp_buffer);
+        for (uint32_t y=0; y<fb_height; y++) {
+            uint32_t y_dbuff = y*fb_width_div8;
+            uint32_t y_fbuff = y*fb_width;
+            for (uint32_t x=0; x<fb_width_div8; x++) {
+                m_tmp_buffer_neon[y_dbuff + x] = vld1_u8((uint8_t*)&m_tmp_buffer[y_fbuff + x*8]);
+            }
+        }
+    } else {
+        getFb(m_tmp_buffer_neon);
+    }
+    for (y_dst=1; y_dst<h; y_dst++) {
+        // Get y coords
+        uint32_t y_fb[4] = {
+            (uint32_t)(((y_dst * y_ratio) >> 8) + y_dst) * fb_width_div8
+        };
+        y_fb[0]-=1*fb_width_div8;
+        y_fb[1];
+        y_fb[2]+=1*fb_width_div8;
+        y_fb[3]+=2*fb_width_div8;
+        // Get wy weight for the coord values
+        uint16x8_t wy = vdupq_n_u16((y_dst * y_ratio) & 0xFF);
+        
+        for (x_dst=1; x_dst<w; x_dst+=8) {
+            uint16_t x_dst_div8 = x_dst >> 3;
+            // Initialize our x coordinates with a rising list and add to it the current x_dst.
+            // Then multiply exery resulting x coordinate with x_ratio to get a vector of x_dst.
+            uint32x4_t x_data_0 = vmull_n_u16( vadd_u16( vect_rising, vdup_n_u16(x_dst  ) ), x_ratio );
+            uint32x4_t x_data_1 = vmull_n_u16( vadd_u16( vect_rising, vdup_n_u16(x_dst+4) ), x_ratio );
+            // The high part of the operation will contain the delta(x0) coordinates for the requested pixel in the fb.
+            // This value will be actually x0-x_dst because our ratio has 1 substructed from them.
+            uint16x4_t x_coord_0 = vshrn_n_u32(x_data_0, 8);
+            uint16x4_t x_coord_1 = vshrn_n_u32(x_data_1, 8);
+            uint16x8_t x_coord = vcombine_u16(x_coord_0, x_coord_1);
+            // The low part will contain the weight for this pixel multiplied by 256.
+            // Because there is no conversion of 16x4 to 8x4, we need to stitch two 16x4 into one 16x8.
+            // Then we can get only the most significant bits to 8
+            uint16x8_t wx = vcombine_u16( vmovn_u32(x_data_0), vmovn_u32(x_data_1));
+            
+            // Get the offset to the offset, then calculate real x_fb values
+            uint16_t x_coord_fb_offset = vgetq_lane_u16(x_coord, 0) >> 3;
+            uint16_t x_coord_offset = x_coord_fb_offset << 3;
+            uint8x8_t x_fb[4];
+            x_fb[0] = vmovn_u16(vqsubq_s16(x_coord, vdupq_n_u16(x_coord_offset+1)));
+            x_fb[1] = vmovn_u16(vsubq_s16(x_coord, vdupq_n_u16(x_coord_offset  )));
+            x_fb[2] = vmovn_u16(vsubq_s16(x_coord, vdupq_n_u16(x_coord_offset-1)));
+            x_fb[3] = vmovn_u16(vsubq_s16(x_coord, vdupq_n_u16(x_coord_offset-2)));
+            x_coord_fb_offset += x_dst_div8;
+            
+            // Get the maximum offset in x_fb, so we know how many 8byte chunks of the fb we need to process.
+            uint8_t imax = (vget_lane_u8(x_fb[3], 7) + 7) >> 3;
+            int16x8_t hermites[4];
+            for (uint8_t y=0; y<4; y++) {
+                uint8x8_t pixels[4];
+                for (uint8_t x=0; x<4; x++) {
+                    pixels[x] = vtbl1_u8(m_tmp_buffer_neon[y_fb[y] + x_coord_fb_offset], x_fb[x]);
+                    for (uint8_t i=1; i<imax; i++) {
+                        pixels[x] = veor_u8(pixels[x], vtbl1_u8(m_tmp_buffer_neon[y_fb[y] + x_coord_fb_offset + i], x_fb[x]));
+                    }
+                }
+                hermites[y] = bicubicHermite(pixels, wx);
+            }
+    
+            vst1_u8(&buff_dst[(y_dst + y_start)*w + x_dst + x_start], vmovn_u16(vreinterpret_u16_s16(bicubicHermite(hermites, wy))));
+    printf("%d: %02x %08x %08x %08x %08x %08x %016x %016x\n", (y_dst + y_start)*w + x_dst + x_start, buff_dst[(y_dst + y_start)*w + x_dst + x_start], hermites[0], hermites[1], hermites[2], hermites[3], wy, bicubicHermite(hermites, wy), vmovn_u16(vreinterpret_u16_s16(bicubicHermite(hermites, wy))));
+        }
+    }
+    return (y_dst + y_start)*w + x_dst + x_start;
+}
 int rotateBuffer(uint8_t* in_buffer, uint8_t* out_buffer, uint16_t w, uint16_t h) {
     uint16_t y;
     uint16_t x;
@@ -292,25 +508,16 @@ int rotateBuffer(uint8_t* in_buffer, uint8_t* out_buffer, uint16_t w, uint16_t h
     
     return x*y;
 }
-int getResizedFb(uint8_t* buffer, uint16_t realw, uint16_t realh, uint16_t w, uint16_t h, uint8_t precision) {
-    if (precision == 16) {
-        return getResizedFb_bilinear_16bit(buffer, realw, realh, (w-realw)/2, (h-realh)/2);
+int getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start, uint16_t y_start, uint8_t type) {
+    if (type == RESIZE_BILINEAR_16BIT) {
+        return getResizedFb_bilinear_16bit(buffer, w, h, x_start, y_start);
+    } else if (type == RESIZE_BILINEAR_8BIT) {
+        return getResizedFb_bilinear_8bit(buffer, w, h, x_start, y_start);
+    } else if (type == RESIZE_BICUBIC_8BIT) {
+        return getResizedFb_bicubic_8bit(buffer, w, h, x_start, y_start);
     } else {
-        return getResizedFb_bilinear_8bit(buffer, realw, realh, (w-realw)/2, (h-realh)/2);
+        return 0;
     }
-}
-int getFb(uint8_t* buffer) {
-    const auto fb_ptr = reinterpret_cast<uint16_t*>(m_fb);
-    const auto fb_height = m_fb_height;
-    const auto fb_width = m_fb_width;
-    const auto fb_size = fb_height * fb_width;
-
-    // Read 2x8x16bit pixels (2x128bits), store 2x8x8bit pixels (2x64bits)
-    for (uint32_t i=0; i<fb_size/8; i++) {
-        vst1_u8(&buffer[i*8], vld2_u8((uint8_t*)&fb_ptr[i*8]).val[1]);
-    }
-    
-    return fb_size/2;
 }
 void write(char const path[], uint8_t* buffer, uint32_t buffer_sz) {
     FILE* output_file = fopen(path, "wb");
@@ -322,7 +529,7 @@ void write(char const path[], uint8_t* buffer, uint32_t buffer_sz) {
     fclose(output_file);
 }
 uint8_t buffer[1404*1872*2];
-uint8_t buffer2[1404*1872*2];
+//uint8_t buffer2[1404*1872*2];
 
 int main(int argc, char* argv[]) {
     uint32_t size = 0;
@@ -343,19 +550,24 @@ int main(int argc, char* argv[]) {
     printf("Done   copy!\n");
     
     memset(buffer, 0, m_fb_size);
-    size = getResizedFb(buffer, 720, 960, 720, 1280, 8);
+    size = getResizedFb(buffer, 720, 960, 0, (1280-960)/2, RESIZE_BILINEAR_8BIT);
     write("img.8.data", buffer, size);
     printf("Done  8 bit!\n");
     
     memset(buffer, 0, m_fb_size);
-    size = getResizedFb(buffer, 720, 960, 720, 1280, 16);
+    size = getResizedFb(buffer, 720, 960, 0, (1280-960)/2, RESIZE_BILINEAR_16BIT);
     write("img.16.data", buffer, size);
     printf("Done 16 bit!\n");
     
-    memset(buffer2, 0, m_fb_size);
+    /*memset(buffer2, 0, m_fb_size);
     size = rotateBuffer(buffer, buffer2, 720, 1280);
     write("img.16.rot.data", buffer2, size);
-    printf("Done 16 bit rotated!\n");
+    printf("Done 16 bit rotated!\n");*/
+    
+    memset(buffer, 0, m_fb_size);
+    size = getResizedFb(buffer, 720, 960, 0, (1280-960)/2, RESIZE_BICUBIC_8BIT);
+    write("img.bicubic.data", buffer, size);
+    printf("Done bicubic!\n");
     
     return 0;
 }

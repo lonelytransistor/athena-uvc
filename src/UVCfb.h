@@ -2,6 +2,7 @@
 #define __UVCFB_H__
 
 #include "UVC.h"
+#include <arm_neon.h>
 
 #define FB_NAME "/dev/fb0"
 
@@ -53,10 +54,14 @@ private:
     
     // Buffers:
     std::vector<struct buffer> m_buf;
-    uint8_t* m_tmp_buffer[2] = {NULL, NULL};
-    long unsigned int m_tmp_buffer_size[2] = {0, 0};
-    uint8_t* m_jpeg_buffer[2] = {NULL, NULL};
+    long unsigned int m_tmp_buffer_size = 0;
+    long unsigned int m_tmp_buffer_neon_size = 0;
     long unsigned int m_jpeg_buffer_size[2] = {0, 0};
+    
+    uint8_t* m_tmp_buffer = NULL;
+    uint8x8_t* m_tmp_buffer_neon = NULL;
+    uint8_t* m_jpeg_buffer[2] = {NULL, NULL};
+    
     uint32_t m_jpeg_buffer_ix = 0;
     uint32_t m_jpeg_buffer_ix_copied = 0;
     
@@ -74,6 +79,7 @@ private:
     int rotateBuffer(uint8_t* in_buffer, uint8_t* out_buffer, uint16_t w, uint16_t h);
 
     int getFb(uint8_t* buffer);
+    int getFb(uint8x8_t* buffer);
     int getRotatedFb(uint8_t* out_buffer);
     int getResizedFb(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start=0, uint16_t y_start=0, uint8_t type=RESIZE_BILINEAR_16BIT);
     int getResizedFb_bicubic_8bit(uint8_t* buffer, uint16_t w, uint16_t h, uint16_t x_start=0, uint16_t y_start=0);
