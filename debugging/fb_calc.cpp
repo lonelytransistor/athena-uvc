@@ -394,7 +394,9 @@ int getResizedFb_bicubic_8bit(uint8_t* buff_dst, uint16_t w, uint16_t h, uint16_
     // Generate helper vectors
     const uint16_t vect_rising_b[] = {0, 1, 2, 3};
     const uint16x4_t vect_rising = vld1_u16(vect_rising_b);
-    const uint8x8_t vect_0x08 = vdup_n_u8(8);
+    const uint8x8_t  vect_0x08 =  vdup_n_u8(0x08);
+    const int16x8_t vect_0xFF = vdupq_n_s16(0xFF);
+    const int16x8_t vect_0x00 = vdupq_n_s16(0x00);
     // Calculate ratios minus 1. These will always be 0.0<ratio<1.0 then scaled up to 8bits
     // 1 + at the beginning ensures better precision on average.
     const uint8_t x_ratio = 1 + ((fb_width  << 8)/w) & 0xFF;
@@ -414,13 +416,11 @@ int getResizedFb_bicubic_8bit(uint8_t* buff_dst, uint16_t w, uint16_t h, uint16_
     }
     for (y_dst=1; y_dst<h; y_dst++) {
         // Get y coords
-        uint32_t y_fb[4] = {
-            (uint32_t)(((y_dst * y_ratio) >> 8) + y_dst) * fb_width_div8
-        };
-        y_fb[0]-=1*fb_width_div8;
-        y_fb[1];
-        y_fb[2]+=1*fb_width_div8;
-        y_fb[3]+=2*fb_width_div8;
+        uint32_t y_fb[4];
+        y_fb[1] = (uint32_t)(((y_dst * y_ratio) >> 8) + y_dst) * fb_width_div8;
+        y_fb[0] = y_fb[1] - fb_width_div8;
+        y_fb[2] = y_fb[1] + fb_width_div8;
+        y_fb[3] = y_fb[2] + fb_width_div8;
         // Get wy weight for the coord values
         uint16x8_t wy = vdupq_n_u16((y_dst * y_ratio) & 0xFF);
         
@@ -471,8 +471,10 @@ int getResizedFb_bicubic_8bit(uint8_t* buff_dst, uint16_t w, uint16_t h, uint16_
                 hermites[y] = bicubicHermite(pixels, wx);
             }
     
-            vst1_u8(&buff_dst[(y_dst + y_start)*w + x_dst + x_start], vmovn_u16(vreinterpret_u16_s16(bicubicHermite(hermites, wy))));
-    printf("%016x %016x %016x %016x %016x %016x %d:%d:%d:%d:%d\n", m_tmp_buffer_neon[y_fb[0] + x_coord_fb_offset], pixels[0], pixels[1], pixels[2], pixels[3], x_fb[0], x_coord_offset, vgetq_lane_u16(x_coord, 0), vget_lane_u8(x_fb[0], 0), imax, vget_lane_u8(x_fb[3], 7));
+            uint16x8_t hermites_sum = vreinterpret_u16_s16(vminq_s16(vmaxq_s16(bicubicHermite(hermites, wy), vect_0x00), vect_0xFF));
+            vst1_u8(&buff_dst[(y_dst + y_start)*w + x_dst + x_start], vmovn_u16(hermites_sum));
+
+            printf("%016x %016x %016x %016x %016x %016x %d:%d:%d:%d:%d\n", m_tmp_buffer_neon[y_fb[0] + x_coord_fb_offset], pixels[0], pixels[1], pixels[2], pixels[3], x_fb[0], x_coord_offset, vgetq_lane_u16(x_coord, 0), vget_lane_u8(x_fb[0], 0), imax, vget_lane_u8(x_fb[3], 7));
         }
     }
     return (y_dst + y_start)*w + x_dst + x_start;
