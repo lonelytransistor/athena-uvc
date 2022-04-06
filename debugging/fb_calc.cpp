@@ -394,11 +394,7 @@ int getResizedFb_bicubic_8bit(uint8_t* buff_dst, uint16_t w, uint16_t h, uint16_
     // Generate helper vectors
     const uint16_t vect_rising_b[] = {0, 1, 2, 3};
     const uint16x4_t vect_rising = vld1_u16(vect_rising_b);
-    const uint8x8_t vect_0x08[] = {
-        vdup_n_u8(8),
-        vdup_n_u8(16),
-        vdup_n_u8(24),
-        vdup_n_u8(32)};
+    const uint8x8_t vect_0x08 = vdup_n_u8(8);
     // Calculate ratios minus 1. These will always be 0.0<ratio<1.0 then scaled up to 8bits
     // 1 + at the beginning ensures better precision on average.
     const uint8_t x_ratio = 1 + ((fb_width  << 8)/w) & 0xFF;
@@ -428,7 +424,7 @@ int getResizedFb_bicubic_8bit(uint8_t* buff_dst, uint16_t w, uint16_t h, uint16_
         // Get wy weight for the coord values
         uint16x8_t wy = vdupq_n_u16((y_dst * y_ratio) & 0xFF);
         
-        for (x_dst=1; x_dst<w; x_dst+=8) {
+        for (x_dst=0; x_dst<w; x_dst+=8) {
             uint16_t x_dst_div8 = x_dst >> 3;
             // Initialize our x coordinates with a rising list and add to it the current x_dst.
             // Then multiply exery resulting x coordinate with x_ratio to get a vector of x_dst.
@@ -460,21 +456,23 @@ int getResizedFb_bicubic_8bit(uint8_t* buff_dst, uint16_t w, uint16_t h, uint16_
             uint8x8_t pixels[4];
             for (uint8_t y=0; y<4; y++) {
                 for (uint8_t x=0; x<4; x++) {
-                    pixels[x] = vtbl1_u8(m_tmp_buffer_neon[y_fb[y] + x_coord_fb_offset], x_fb[x]);
-                    for (uint8_t i=1; i<imax; i++) {
-                        pixels[x] = veor_u8(pixels[x],
-                                            vtbl1_u8(
-                                                m_tmp_buffer_neon[y_fb[y] + x_coord_fb_offset + i],
-                                                vsub_u8(x_fb[x], vect_0x08[i])
-                                            )
-                                        );
+                    uint8x8_t sv_offset = x_fb[x];
+                    for (uint8_t i=0; i<imax; i++) {
+                        uint8x8_t fb_data = m_tmp_buffer_neon[y_fb[y] + x_coord_fb_offset + i];
+                        
+                        if (i == 0) {
+                            pixels[x] = vtbl1_u8(fb_data, sv_offset);
+                        } else {
+                            sv_offset = vsub_u8(sv_offset, vect_0x08);
+                            pixels[x] = veor_u8(pixels[x], vtbl1_u8(fb_data, sv_offset));
+                        }
                     }
                 }
                 hermites[y] = bicubicHermite(pixels, wx);
             }
     
             vst1_u8(&buff_dst[(y_dst + y_start)*w + x_dst + x_start], vmovn_u16(vreinterpret_u16_s16(bicubicHermite(hermites, wy))));
-    printf("%016x %016x %016x %016x %016x %016x %016x %016x %d:%d:%d:%d:%d\n", pixels[0], pixels[1], pixels[2], pixels[3], x_fb[0], x_fb[1], x_fb[2], x_fb[3], x_coord_offset, vgetq_lane_u16(x_coord, 0), vget_lane_u8(x_fb[0], 0), imax, vget_lane_u8(x_fb[3], 7));
+    printf("%016x %016x %016x %016x %016x %016x %d:%d:%d:%d:%d\n", m_tmp_buffer_neon[y_fb[0] + x_coord_fb_offset], pixels[0], pixels[1], pixels[2], pixels[3], x_fb[0], x_coord_offset, vgetq_lane_u16(x_coord, 0), vget_lane_u8(x_fb[0], 0), imax, vget_lane_u8(x_fb[3], 7));
         }
     }
     return (y_dst + y_start)*w + x_dst + x_start;
