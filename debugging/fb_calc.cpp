@@ -449,13 +449,13 @@ int getResizedFb_bicubic_8bit(uint8_t* buff_dst, uint16_t w, uint16_t h, uint16_
             uint16_t x_coord_offset = x_coord_fb_offset << 3;
             uint8x8_t x_fb[4];
             x_fb[0] = vmovn_u16(vqsubq_u16(x_coord, vdupq_n_u16(x_coord_offset+1)));
-            x_fb[1] = vmovn_u16(vsubq_u16(x_coord, vdupq_n_u16(x_coord_offset  )));
-            x_fb[2] = vmovn_u16(vsubq_u16(x_coord, vdupq_n_u16(x_coord_offset-1)));
-            x_fb[3] = vmovn_u16(vsubq_u16(x_coord, vdupq_n_u16(x_coord_offset-2)));
+            x_fb[1] = vmovn_u16( vsubq_u16(x_coord, vdupq_n_u16(x_coord_offset  )));
+            x_fb[2] = vmovn_u16( vsubq_u16(x_coord, vdupq_n_u16(x_coord_offset-1)));
+            x_fb[3] = vmovn_u16( vsubq_u16(x_coord, vdupq_n_u16(x_coord_offset-2)));
             x_coord_fb_offset += x_dst_div8;
             
             // Get the maximum offset in x_fb, so we know how many 8byte chunks of the fb we need to process.
-            uint8_t imax = (vget_lane_u8(x_fb[3], 7) + 7) >> 3;
+            uint8_t imax = (vget_lane_u8(x_fb[3], 7) + 8) >> 3;
             int16x8_t hermites[4];
             uint8x8_t pixels[4];
             for (uint8_t y=0; y<4; y++) {
@@ -465,7 +465,7 @@ int getResizedFb_bicubic_8bit(uint8_t* buff_dst, uint16_t w, uint16_t h, uint16_
                         pixels[x] = veor_u8(pixels[x],
                                             vtbl1_u8(
                                                 m_tmp_buffer_neon[y_fb[y] + x_coord_fb_offset + i],
-                                                vqsub_u8(x_fb[x], vect_0x08[i])
+                                                vsub_u8(x_fb[x], vect_0x08[i])
                                             )
                                         );
                     }
@@ -474,7 +474,7 @@ int getResizedFb_bicubic_8bit(uint8_t* buff_dst, uint16_t w, uint16_t h, uint16_
             }
     
             vst1_u8(&buff_dst[(y_dst + y_start)*w + x_dst + x_start], vmovn_u16(vreinterpret_u16_s16(bicubicHermite(hermites, wy))));
-    printf("%d: %02x %016x %016x %016x %016x %016x %016x %016x %016x\n", (y_dst + y_start)*w + x_dst + x_start, buff_dst[(y_dst + y_start)*w + x_dst + x_start], pixels[0], pixels[1], pixels[2], pixels[3], x_fb[0], x_fb[1], x_fb[2], x_fb[3]);
+    printf("%016x %016x %016x %016x %016x %016x %016x %016x %d:%d:%d:%d:%d\n", pixels[0], pixels[1], pixels[2], pixels[3], x_fb[0], x_fb[1], x_fb[2], x_fb[3], x_coord_offset, vgetq_lane_u16(x_coord, 0), vget_lane_u8(x_fb[0], 0), imax, vget_lane_u8(x_fb[3], 7));
         }
     }
     return (y_dst + y_start)*w + x_dst + x_start;
